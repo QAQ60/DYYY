@@ -1170,7 +1170,8 @@ NSDictionary *getCurrentABTestData(void) {
                 [DYYYSettingItem itemWithTitle:@"  -企业认证（蓝V）" key:@"DYYYVerifySpoofType_Enterprise" type:DYYYSettingItemTypeSwitch],
                 [DYYYSettingItem itemWithTitle:@"  -音乐人认证" key:@"DYYYVerifySpoofType_Musician" type:DYYYSettingItemTypeSwitch],
                 [DYYYSettingItem itemWithTitle:@"  -创作者认证" key:@"DYYYVerifySpoofType_Creator" type:DYYYSettingItemTypeSwitch],
-                [DYYYSettingItem itemWithTitle:@"  -商家认证" key:@"DYYYVerifySpoofType_Merchant" type:DYYYSettingItemTypeSwitch]
+                [DYYYSettingItem itemWithTitle:@"  -商家认证" key:@"DYYYVerifySpoofType_Merchant" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -调试：报告控件类名" key:@"DYYYVerifySpoofDebug" type:DYYYSettingItemTypeSwitch]
             ],
 
             // 第七部分 - 图标自定义功能
