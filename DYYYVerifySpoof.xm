@@ -118,6 +118,21 @@ static UIColor *DYYYVerifySpoofBadgeColor(void) {
     return DYYYVerifySpoofDefaultColor(DYYYVerifySpoofKind());
 }
 
+// 认证文案颜色：官方黄V配的是偏金棕色的文案，这里跟随同一套配色逻辑。
+// 用户自定义了颜色就以自定义色为准（图标与文案同色）。
+static UIColor *DYYYVerifySpoofTextColor(void) {
+    NSString *hex = DYYYCachedString(DYYY_VERIFY_COLOR_KEY);
+    hex = [hex stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (hex.length >= 6) {
+        UIColor *custom = [DYYYManager colorWithHexString:hex];
+        if (custom) return custom;
+    }
+    if (DYYYVerifySpoofKind() == DYYYVerifyKindPersonal) {
+        return [UIColor colorWithRed:0.69 green:0.55 blue:0.25 alpha:1.0];
+    }
+    return DYYYVerifySpoofDefaultColor(DYYYVerifySpoofKind());
+}
+
 // 认证类型 -> 抖音 verification_type 取值（尽力映射，用于模型层）
 static NSInteger DYYYVerifySpoofVerificationTypeValue(void) {
     switch (DYYYVerifySpoofKind()) {
@@ -177,7 +192,8 @@ static void DYYYVerifyBadgeRemove(UIView *host) {
     objc_setAssociatedObject(host, kDYYYVerifyBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// 在昵称控件右侧贴上认证条，与抖音自带的认证标识位置一致。
+// 官方认证标识的版式：一枚圆形 V 图标 + 同色系认证文案，整体贴在昵称下方另起一行。
+// 下面确实没空间时才退回昵称右侧同行，避免和「私密账号·抖音号」那行重叠。
 // 每次布局都会重算，保证滚动/旋转/复用后位置正确。
 static void DYYYVerifyBadgeApply(UIView *host) {
     if (!host) return;
@@ -188,45 +204,77 @@ static void DYYYVerifyBadgeApply(UIView *host) {
         return;
     }
 
-    UILabel *badge = objc_getAssociatedObject(host, kDYYYVerifyBadgeKey);
+    UIView *badge = objc_getAssociatedObject(host, kDYYYVerifyBadgeKey);
     if (!badge) {
-        badge = [[UILabel alloc] initWithFrame:CGRectZero];
+        badge = [[UIView alloc] initWithFrame:CGRectZero];
         badge.userInteractionEnabled = NO;
-        badge.textAlignment = NSTextAlignmentCenter;
-        badge.font = [UIFont boldSystemFontOfSize:9.0];
-        badge.textColor = [UIColor whiteColor];
-        badge.numberOfLines = 1;
         badge.tag = DYYYVerifyBadgeTag;
-        badge.layer.cornerRadius = 4.0;
-        badge.layer.masksToBounds = YES;
+
+        UILabel *icon = [[UILabel alloc] initWithFrame:CGRectZero];
+        icon.tag = DYYYVerifyBadgeTag + 1;
+        icon.text = @"V";
+        icon.textAlignment = NSTextAlignmentCenter;
+        icon.font = [UIFont boldSystemFontOfSize:9.0];
+        icon.textColor = [UIColor whiteColor];
+        icon.layer.cornerRadius = 7.0;
+        icon.layer.masksToBounds = YES;
+        [badge addSubview:icon];
+
+        UILabel *text = [[UILabel alloc] initWithFrame:CGRectZero];
+        text.tag = DYYYVerifyBadgeTag + 2;
+        text.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
+        text.numberOfLines = 1;
+        [badge addSubview:text];
+
         objc_setAssociatedObject(host, kDYYYVerifyBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [container addSubview:badge];
     }
 
-    NSString *text = [NSString stringWithFormat:@"V %@", DYYYVerifySpoofText()];
-    if (![badge.text isEqualToString:text]) {
-        badge.text = text;
+    UILabel *icon = (UILabel *)[badge viewWithTag:DYYYVerifyBadgeTag + 1];
+    UILabel *text = (UILabel *)[badge viewWithTag:DYYYVerifyBadgeTag + 2];
+
+    UIColor *iconColor = DYYYVerifySpoofBadgeColor();
+    UIColor *textColor = DYYYVerifySpoofTextColor();
+    NSString *content = DYYYVerifySpoofText();
+
+    if (![icon.backgroundColor isEqual:iconColor]) icon.backgroundColor = iconColor;
+    if (![text.textColor isEqual:textColor]) text.textColor = textColor;
+    if (![text.text isEqualToString:content]) text.text = content;
+
+    CGFloat iconSide = 14.0;
+    CGRect iconFrame = CGRectMake(0.0, 0.0, iconSide, iconSide);
+    if (!CGRectEqualToRect(icon.frame, iconFrame)) icon.frame = iconFrame;
+
+    CGSize textFit = [text sizeThatFits:CGSizeMake(CGFLOAT_MAX, 20.0)];
+    CGFloat textWidth = ceil(textFit.width);
+    CGRect textFrame = CGRectMake(iconSide + 3.0, 0.0, textWidth, iconSide);
+    if (!CGRectEqualToRect(text.frame, textFrame)) text.frame = textFrame;
+
+    CGFloat width = iconSide + 3.0 + textWidth;
+    CGFloat height = iconSide;
+
+    // 找昵称正下方最近的一个兄弟视图，用它判断还剩多少纵向空间
+    CGFloat nextTop = CGFLOAT_MAX;
+    for (UIView *sibling in container.subviews) {
+        if (sibling == host || sibling == badge || sibling.hidden) continue;
+        CGFloat top = CGRectGetMinY(sibling.frame);
+        if (top >= CGRectGetMaxY(host.frame) - 1.0 && top < nextTop) nextTop = top;
     }
+    CGFloat gap = (nextTop < CGFLOAT_MAX) ? (nextTop - CGRectGetMaxY(host.frame)) : CGFLOAT_MAX;
 
-    UIColor *color = DYYYVerifySpoofBadgeColor();
-    if (![badge.backgroundColor isEqual:color]) {
-        badge.backgroundColor = color;
+    CGRect target;
+    if (gap >= height + 2.0) {
+        // 昵称下方另起一行，与官方排版一致
+        target = CGRectMake(CGRectGetMinX(host.frame),
+                            CGRectGetMaxY(host.frame) + 2.0,
+                            width, height);
+    } else {
+        // 下方被占，退回昵称右侧同行
+        CGFloat x = CGRectGetMaxX(host.frame) + 4.0;
+        CGFloat maxX = CGRectGetMaxX(container.bounds) - 2.0;
+        if (x + width > maxX) x = MAX(0.0, maxX - width);
+        target = CGRectMake(x, CGRectGetMidY(host.frame) - height / 2.0, width, height);
     }
-
-    [badge sizeToFit];
-
-    CGFloat width = MAX(badge.bounds.size.width + 10.0, 28.0);
-    CGFloat height = MAX(badge.bounds.size.height, 14.0);
-    CGFloat x = CGRectGetMaxX(host.frame) + 3.0;
-    CGFloat y = CGRectGetMidY(host.frame) - height / 2.0;
-
-    // 超出父视图右边界时向内收，保证始终可见
-    CGFloat maxX = CGRectGetMaxX(container.bounds) - 2.0;
-    if (x + width > maxX) {
-        x = MAX(0.0, maxX - width);
-    }
-
-    CGRect target = CGRectMake(x, y, width, height);
 
     // 仅在实际变化时写 frame，避免触发无谓的布局回环
     if (!CGRectEqualToRect(badge.frame, target)) {
@@ -246,8 +294,9 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
     if (!root) return nil;
 
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
-    UIView *named = nil;      // 类名命中
-    UIView *fallback = nil;   // 几何兜底
+    UIView *named = nil;          // 类名命中
+    UIView *fallback = nil;       // 几何兜底（字号最大）
+    CGFloat bestFontSize = 0.0;
 
     NSUInteger visited = 0;
     NSUInteger cursor = 0;
@@ -276,14 +325,22 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
             named = view;
         }
 
-        // 兜底：主页上半部分、字号较大的非空文本标签
-        if (!fallback && laidOut && [view isKindOfClass:[UILabel class]]) {
+        // 兜底：主页上半部分「字号最大的非空文本」——昵称通常是页面上字号最大的文本，
+        // 而统计数字（获赞/关注/粉丝）字号偏小且是纯数字，这里一并排除。
+        if (laidOut && [view isKindOfClass:[UILabel class]]) {
             UILabel *label = (UILabel *)view;
-            if (label.text.length > 0 &&
-                label.font.pointSize >= 15.0 &&
-                view.frame.size.height <= 44.0 &&
+            NSString *t = label.text;
+            if (t.length > 0 && label.font.pointSize >= 16.0 && view.frame.size.height <= 44.0 &&
                 CGRectGetMidY(view.frame) < CGRectGetHeight(root.bounds) * 0.6) {
-                fallback = view;
+
+                NSString *rest = [t stringByTrimmingCharactersInSet:[NSCharacterSet decimalDigitCharacterSet]];
+                rest = [rest stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                BOOL numericOnly = (rest.length == 0);
+
+                if (!numericOnly && label.font.pointSize > bestFontSize) {
+                    bestFontSize = label.font.pointSize;
+                    fallback = label;
+                }
             }
         }
 
@@ -295,12 +352,14 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
 
 static BOOL gDYYYVerifyDebugReported = NO;
 
-static void DYYYVerifyDebugReport(NSMutableArray<NSString *> *names, BOOL found) {
+static void DYYYVerifyDebugReport(NSMutableArray<NSString *> *names, UIView *host) {
     if (!DYYYVerifySpoofDebug() || gDYYYVerifyDebugReported) return;
     gDYYYVerifyDebugReported = YES;
 
     NSString *list = names.count > 0 ? [names componentsJoinedByString:@" / "] : @"（无 name/verif 类控件）";
-    NSString *msg = [NSString stringWithFormat:@"认证伪装%@：%@", found ? @"已注入" : @"未找到昵称控件", list];
+    NSString *picked = host ? NSStringFromClass([host class]) : @"未命中";
+    NSString *msg = [NSString stringWithFormat:@"认证伪装%@ ｜命中：%@ ｜候选：%@",
+                     host ? @"已注入" : @"未找到昵称控件", picked, list];
     if (msg.length > 220) msg = [[msg substringToIndex:220] stringByAppendingString:@"…"];
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -323,7 +382,7 @@ static void DYYYVerifyApplyToProfilePage(UIViewController *vc) {
         NSMutableArray<NSString *> *names = DYYYVerifySpoofDebug() ? [NSMutableArray array] : nil;
         host = DYYYVerifyFindNicknameHost(vc.view, names);
         gDYYYVerifyProfileHost = host;
-        if (names) DYYYVerifyDebugReport(names, host != nil);
+        if (names) DYYYVerifyDebugReport(names, host);
     }
 
     if (host) {
