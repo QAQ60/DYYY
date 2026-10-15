@@ -1163,7 +1163,6 @@ NSDictionary *getCurrentABTestData(void) {
             // 第六部分 - 认证伪装（本地渲染层伪装，不影响服务端与他人视角）
             @[
                 [DYYYSettingItem itemWithTitle:@"认证伪装-开关" key:@"DYYYEnableVerifySpoof" type:DYYYSettingItemTypeSwitch],
-                [DYYYSettingItem itemWithTitle:@"  -全局生效" key:@"DYYYVerifySpoofGlobal" type:DYYYSettingItemTypeSwitch],
                 [DYYYSettingItem itemWithTitle:@"  -认证文案" key:@"DYYYVerifySpoofText" type:DYYYSettingItemTypeTextField placeholder:@"留空则使用类型默认文案"],
                 [DYYYSettingItem itemWithTitle:@"  -认证颜色" key:@"DYYYVerifySpoofColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制，留空用类型默认色"],
                 [DYYYSettingItem itemWithTitle:@"  -个人认证（黄V）" key:@"DYYYVerifySpoofType_Personal" type:DYYYSettingItemTypeSwitch],

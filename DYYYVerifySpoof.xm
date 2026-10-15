@@ -27,11 +27,11 @@
 #import "AwemeHeaders.h"
 #import "DYYYUtils.h"
 #import "DYYYManager.h"
+#import "DYYYPaths.h"
 
 #pragma mark - 配置键
 
 #define DYYY_VERIFY_ENABLED_KEY         @"DYYYEnableVerifySpoof"
-#define DYYY_VERIFY_GLOBAL_KEY          @"DYYYVerifySpoofGlobal"
 #define DYYY_VERIFY_TEXT_KEY            @"DYYYVerifySpoofText"
 #define DYYY_VERIFY_COLOR_KEY           @"DYYYVerifySpoofColor"
 #define DYYY_VERIFY_DEBUG_KEY           @"DYYYVerifySpoofDebug"
@@ -60,13 +60,9 @@ static BOOL DYYYVerifySpoofDebug(void) {
     return DYYYCachedBool(DYYY_VERIFY_DEBUG_KEY);
 }
 
-static BOOL DYYYVerifySpoofIsGlobal(void) {
-    // 未配置时默认「全局」，与设置页默认值保持一致
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    id stored = [defaults objectForKey:DYYY_VERIFY_GLOBAL_KEY];
-    if (!stored) return YES;
-    return DYYYCachedBool(DYYY_VERIFY_GLOBAL_KEY);
-}
+// 只作用于「我」的个人主页。
+// 早期版本做了「全局生效」选项，用 AWEUserNameLabel 在信息流里也贴一遍——
+// 那是播放页的作者昵称控件，会把别人的认证一起改掉，属于设计错误，已移除。
 
 // 认证类型：同名开关互斥，命中第一个开启的即可（个人认证为默认兜底）
 static DYYYVerifyKind DYYYVerifySpoofKind(void) {
@@ -177,9 +173,6 @@ static NSInteger DYYYVerifySpoofVerificationTypeValue(void) {
 static const void *kDYYYVerifyBadgeKey = &kDYYYVerifyBadgeKey;
 static NSInteger const DYYYVerifyBadgeTag = 0x4D5956; // 'MYV'
 
-// 个人主页上定位到的昵称控件（弱引用，视图销毁后自动失效并触发重新扫描）
-static __weak UIView *gDYYYVerifyProfileHost = nil;
-
 static NSString *DYYYVerifyLowerClassName(UIView *view) {
     return [NSStringFromClass([view class]) lowercaseString];
 }
@@ -288,6 +281,23 @@ static void DYYYVerifyBadgeApply(UIView *host) {
 
 #pragma mark - 个人主页：在视图树中定位昵称控件
 
+// 判断一段文本是否属于主页统计区（获赞/关注/粉丝数量），这些不是昵称。
+// 注意不能只判断「是否纯数字」：统计数字常带中文单位（4.4亿 / 966.3万），
+// 去掉数字后还剩单位字，早期版本就是因此在别人主页上贴到了统计栏。
+static BOOL DYYYVerifyLooksLikeStat(NSString *text) {
+    if (text.length == 0) return YES;
+
+    NSArray<NSString *> *statWords = @[@"获赞", @"关注", @"粉丝", @"互关", @"作品", @"喜欢", @"动态"];
+    for (NSString *word in statWords) {
+        if ([text containsString:word]) return YES;
+    }
+
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"0123456789.万亿wWkK+"];
+    if ([text rangeOfCharacterFromSet:[allowed invertedSet]].location == NSNotFound) return YES;
+
+    return NO;
+}
+
 // 广度优先扫描，返回最像「昵称」的控件。
 // 优先按类名匹配（各抖音版本命名不一），找不到再退回几何特征兜底。
 static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString *> *debugNames) {
@@ -325,22 +335,19 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
             named = view;
         }
 
-        // 兜底：主页上半部分「字号最大的非空文本」——昵称通常是页面上字号最大的文本，
-        // 而统计数字（获赞/关注/粉丝）字号偏小且是纯数字，这里一并排除。
+        // 兜底：主页上半部分「字号最大的非空文本」——昵称通常是页面上字号最大的文字。
+        // 统计区（获赞/关注/粉丝，含 4.4亿 / 966.3万 这类带单位的大数字）显式排除。
         if (laidOut && [view isKindOfClass:[UILabel class]]) {
             UILabel *label = (UILabel *)view;
             NSString *t = label.text;
-            if (t.length > 0 && label.font.pointSize >= 16.0 && view.frame.size.height <= 44.0 &&
-                CGRectGetMidY(view.frame) < CGRectGetHeight(root.bounds) * 0.6) {
-
-                NSString *rest = [t stringByTrimmingCharactersInSet:[NSCharacterSet decimalDigitCharacterSet]];
-                rest = [rest stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                BOOL numericOnly = (rest.length == 0);
-
-                if (!numericOnly && label.font.pointSize > bestFontSize) {
-                    bestFontSize = label.font.pointSize;
-                    fallback = label;
-                }
+            if (t.length >= 2 &&
+                label.font.pointSize >= 16.0 &&
+                view.frame.size.height <= 44.0 &&
+                CGRectGetMidY(view.frame) < CGRectGetHeight(root.bounds) * 0.6 &&
+                !DYYYVerifyLooksLikeStat(t) &&
+                label.font.pointSize > bestFontSize) {
+                bestFontSize = label.font.pointSize;
+                fallback = label;
             }
         }
 
@@ -352,42 +359,102 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
 
 static BOOL gDYYYVerifyDebugReported = NO;
 
-static void DYYYVerifyDebugReport(NSMutableArray<NSString *> *names, UIView *host) {
+static void DYYYVerifyDebugReportWithVC(NSMutableArray<NSString *> *names,
+                                        UIView *host,
+                                        NSString *vcName,
+                                        NSString *candidateList) {
     if (!DYYYVerifySpoofDebug() || gDYYYVerifyDebugReported) return;
     gDYYYVerifyDebugReported = YES;
 
-    NSString *list = names.count > 0 ? [names componentsJoinedByString:@" / "] : @"（无 name/verif 类控件）";
     NSString *picked = host ? NSStringFromClass([host class]) : @"未命中";
-    NSString *msg = [NSString stringWithFormat:@"认证伪装%@ ｜命中：%@ ｜候选：%@",
-                     host ? @"已注入" : @"未找到昵称控件", picked, list];
-    if (msg.length > 220) msg = [[msg substringToIndex:220] stringByAppendingString:@"…"];
+    NSString *msg = [NSString stringWithFormat:@"认证伪装%@｜页面：%@｜命中：%@｜候选：%@",
+                     host ? @"已注入" : @"未找到",
+                     vcName ?: @"?",
+                     picked,
+                     candidateList ?: @"（空）"];
+    if (msg.length > 260) msg = [[msg substringToIndex:260] stringByAppendingString:@"…"];
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [DYYYManager showToast:msg];
     });
 }
 
-// 处理个人主页的一次布局：定位昵称控件并贴认证条
-static void DYYYVerifyApplyToProfilePage(UIViewController *vc) {
-    if (!vc || !vc.isViewLoaded) return;
+// 昵称控件的缓存按「控制器」存放，不再用全局静态变量。
+// 早期版本用全局静态缓存，会把别人主页上找到的控件缓存下来复用，
+// 结果切到自己主页时直接复用了别人的控件——徽标就"跑别人主页去了"。
+static const void *kDYYYVerifyHostKey = &kDYYYVerifyHostKey;
+
+static void DYYYVerifySetHostForVC(UIViewController *vc, UIView *host) {
+    if (!vc) return;
+    objc_setAssociatedObject(vc, kDYYYVerifyHostKey, host, OBJC_ASSOCIATION_ASSIGN);
+}
+
+static UIView *DYYYVerifyHostForVC(UIViewController *vc) {
+    if (!vc) return nil;
+    id host = objc_getAssociatedObject(vc, kDYYYVerifyHostKey);
+    if (![host isKindOfClass:[UIView class]]) return nil;
+    UIView *view = (UIView *)host;
+    if (!view.superview || view.hidden) return nil;
+    return view;
+}
+
+// 把个人主页视图树完整写到文件，便于定位「昵称控件到底是哪个类」。
+static void DYYYVerifyDumpTreeRecursive(UIView *view, NSInteger depth, NSMutableString *out) {
+    if (!view || depth > 8) return;
+    for (UIView *sub in view.subviews) {
+        NSString *text = @"";
+        NSString *font = @"-";
+        if ([sub isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)sub;
+            text = label.text ?: @"";
+            font = [NSString stringWithFormat:@"%.0f", label.font.pointSize];
+        }
+        [out appendFormat:@"%@%@ frame=(%.0f,%.0f,%.0f,%.0f) font=%@ text=%@\n",
+         [@"" stringByPaddingToLength:(NSUInteger)(depth * 2) withString:@" " startingAtIndex:0],
+         NSStringFromClass([sub class]),
+         sub.frame.origin.x, sub.frame.origin.y, sub.frame.size.width, sub.frame.size.height,
+         font, text];
+        DYYYVerifyDumpTreeRecursive(sub, depth + 1, out);
+    }
+}
+
+static void DYYYVerifyDumpProfileTree(UIView *root) {
+    @try {
+        NSString *dir = [DYYYPaths logsDir];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSMutableString *out = [NSMutableString string];
+        [out appendFormat:@"root=%@ bounds=(%.0f,%.0f)\n",
+         NSStringFromClass([root class]), root.bounds.size.width, root.bounds.size.height];
+        DYYYVerifyDumpTreeRecursive(root, 0, out);
+        NSString *path = [dir stringByAppendingPathComponent:@"verify_spoof_scan.txt"];
+        [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[DYYY][VerifySpoof] 视图树已写入 %@", path);
+    } @catch (NSException *e) {
+        NSLog(@"[DYYY][VerifySpoof] 视图树导出失败: %@", e);
+    }
+}
+
+// 处理个人主页的一次布局：定位昵称控件并贴认证条。返回是否命中。
+static BOOL DYYYVerifyApplyToProfilePage(UIViewController *vc) {
+    if (!vc || !vc.isViewLoaded) return NO;
 
     if (!DYYYVerifySpoofEnabled()) {
-        if (gDYYYVerifyProfileHost) DYYYVerifyBadgeRemove(gDYYYVerifyProfileHost);
-        gDYYYVerifyProfileHost = nil;
-        return;
+        UIView *cached = DYYYVerifyHostForVC(vc);
+        if (cached) DYYYVerifyBadgeRemove(cached);
+        DYYYVerifySetHostForVC(vc, nil);
+        return NO;
     }
 
-    UIView *host = gDYYYVerifyProfileHost;
-    if (!host || !host.superview || host.hidden) {
-        NSMutableArray<NSString *> *names = DYYYVerifySpoofDebug() ? [NSMutableArray array] : nil;
-        host = DYYYVerifyFindNicknameHost(vc.view, names);
-        gDYYYVerifyProfileHost = host;
-        if (names) DYYYVerifyDebugReport(names, host);
+    UIView *host = DYYYVerifyHostForVC(vc);
+    if (!host) {
+        host = DYYYVerifyFindNicknameHost(vc.view, nil);
+        DYYYVerifySetHostForVC(vc, host);
     }
 
     if (host) {
         DYYYVerifyBadgeApply(host);
     }
+    return host != nil;
 }
 
 // 昵称控件类名在部分版本里不存在，用 %group 做存在性判断后再 %init，
@@ -397,32 +464,42 @@ static void DYYYVerifyApplyToProfilePage(UIViewController *vc) {
 - (void)reloadSettings;
 @end
 
+// 主页视图树是逐步搭起来的：viewDidLayoutSubviews 首次触发时内容往往还没加上，
+// 扫一次必然落空。这里做有限次重试，直到命中或放弃。
+static void DYYYVerifyProfileScanTick(UIViewController *vc, NSInteger attempt) {
+    if (!vc || !vc.isViewLoaded) return;
+
+    BOOL hit = DYYYVerifyApplyToProfilePage(vc);
+
+    // 调试上报：命中即报；或重试若干次仍未命中再报（那时视图树已稳定）
+    if (DYYYVerifySpoofDebug() && !gDYYYVerifyDebugReported && (hit || attempt >= 4)) {
+        DYYYVerifyDumpProfileTree(vc.view);
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        UIView *host = DYYYVerifyFindNicknameHost(vc.view, names);
+        NSString *vcName = NSStringFromClass([vc class]);
+        NSString *list = names.count > 0 ? [names componentsJoinedByString:@" / "] : @"（无 name/verif 类控件）";
+        DYYYVerifyDebugReportWithVC(names, host, vcName, list);
+    }
+
+    if (hit || attempt >= 8) return;
+
+    __weak UIViewController *weakVC = vc;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        DYYYVerifyProfileScanTick(weakVC, attempt + 1);
+    });
+}
+
 %group DYYYVerifyProfilePage
 
 %hook AWEProfileHeaderMyProfileViewController
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    DYYYVerifyApplyToProfilePage(self);
+    DYYYVerifyProfileScanTick(self, 0);
 }
 
 %end
-
-%end
-
-#pragma mark - 信息流等其它渲染位（仅「全局」模式）
-
-%hook AWEUserNameLabel
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (!DYYYVerifySpoofEnabled() || !DYYYVerifySpoofIsGlobal()) {
-        DYYYVerifyBadgeRemove(self);
-        return;
-    }
-    DYYYVerifyBadgeApply(self);
-}
 
 %end
 
@@ -441,29 +518,6 @@ static NSArray<UIWindow *> *DYYYVerifyAllWindows(void) {
         [windows addObjectsFromArray:[UIApplication sharedApplication].windows];
     }
     return windows;
-}
-
-static void DYYYVerifyWalkViewTree(UIView *view) {
-    if (!view) return;
-
-    static Class userNameLabelClass = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        userNameLabelClass = NSClassFromString(@"AWEUserNameLabel");
-    });
-
-    if (userNameLabelClass && [view isKindOfClass:userNameLabelClass]) {
-        if (DYYYVerifySpoofIsGlobal()) {
-            DYYYVerifyBadgeApply(view);
-        } else {
-            DYYYVerifyBadgeRemove(view);
-        }
-    }
-
-    // subviews 返回的是快照数组，遍历中增删子视图安全
-    for (UIView *subview in view.subviews) {
-        DYYYVerifyWalkViewTree(subview);
-    }
 }
 
 // 在控制器树中找出当前展示的个人主页控制器（个人主页通常嵌在 Tab/导航容器里）
@@ -503,17 +557,13 @@ extern "C" {
 
 void DYYYVerifySpoofRefreshUI(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // 关键控件缓存与一次性调试上报都需要重置
-        gDYYYVerifyProfileHost = nil;
         gDYYYVerifyDebugReported = NO;
 
         for (UIWindow *window in DYYYVerifyAllWindows()) {
-            DYYYVerifyWalkViewTree(window);
-
             // 命中个人主页时立刻按新配置重贴一次
             UIViewController *profileVC = DYYYVerifyFindProfileController(window.rootViewController);
             if (profileVC) {
-                DYYYVerifyApplyToProfilePage(profileVC);
+                DYYYVerifyProfileScanTick(profileVC, 0);
             }
         }
     });
@@ -536,7 +586,7 @@ void DYYYVerifySpoofRefreshUI(void) {
               (int)[userModelClass instancesRespondToSelector:NSSelectorFromString(@"enterpriseVerifyReason")],
               (int)[userModelClass instancesRespondToSelector:NSSelectorFromString(@"verificationType")]);
     } else {
-        NSLog(@"[DYYY][VerifySpoof] 未找到 AWEUserModel，全局模式将退回视图层");
+        NSLog(@"[DYYY][VerifySpoof] 未找到 AWEUserModel，仅依赖视图层注入");
     }
 
     // 个人主页头控制器存在时才挂载对应 hook
