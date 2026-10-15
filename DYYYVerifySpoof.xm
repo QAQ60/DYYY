@@ -298,6 +298,20 @@ static BOOL DYYYVerifyLooksLikeStat(NSString *text) {
     return NO;
 }
 
+// 候选控件按特异性打分：分越高越优先。
+// 实测抖音主页的昵称控件是 AWEProfileHeaderNameLabelContainerView，
+// 外层还有 AWEProfileHeaderNameAreaSectionCell_New（整个名字区域），
+// BFS 会先遇到外层容器，所以不能"先到先得"，要按特异性取最优。
+static NSInteger DYYYVerifyNamePriority(NSString *lowerCls) {
+    if ([lowerCls containsString:@"namelabelcontainer"]) return 5;
+    if ([lowerCls containsString:@"namelabel"])          return 4;
+    if ([lowerCls containsString:@"usernamelabel"])      return 4;
+    if ([lowerCls containsString:@"nickname"])           return 4;
+    if ([lowerCls containsString:@"namearea"])           return 3;
+    if ([lowerCls containsString:@"name"] && [lowerCls containsString:@"label"]) return 3;
+    return 0;
+}
+
 // 广度优先扫描，返回最像「昵称」的控件。
 // 优先按类名匹配（各抖音版本命名不一），找不到再退回几何特征兜底。
 static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString *> *debugNames) {
@@ -305,6 +319,7 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
 
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
     UIView *named = nil;          // 类名命中
+    NSInteger namedPriority = 0;  // 类名命中的特异性分数
     UIView *fallback = nil;       // 几何兜底（字号最大）
     CGFloat bestFontSize = 0.0;
 
@@ -327,12 +342,12 @@ static UIView *DYYYVerifyFindNicknameHost(UIView *root, NSMutableArray<NSString 
 
         BOOL laidOut = view.frame.size.width > 0.0 && view.frame.size.height > 0.0;
 
-        if (!named && laidOut &&
-            ([cls containsString:@"usernamelabel"] ||
-             [cls containsString:@"nickname"] ||
-             [cls containsString:@"nicknamelabel"] ||
-             [cls containsString:@"namenick"])) {
-            named = view;
+        if (laidOut) {
+            NSInteger priority = DYYYVerifyNamePriority(cls);
+            if (priority > 0 && priority > namedPriority) {
+                named = view;
+                namedPriority = priority;
+            }
         }
 
         // 兜底：主页上半部分「字号最大的非空文本」——昵称通常是页面上字号最大的文字。
