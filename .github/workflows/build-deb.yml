@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +21,7 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-version || true
 
       - name: Install Theos
         run: |
@@ -31,21 +32,25 @@ jobs:
 
       - name: Fetch iOS SDKs
         run: |
-          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
-          ls "$THEOS/sdks" | head
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/ios-sdks
+          rm -rf "$THEOS/sdks"
+          mv /tmp/ios-sdks "$THEOS/sdks"
+          ls "$THEOS/sdks" | tail -5
 
       - name: Ensure ldid
         run: brew install ldid || true
 
       - name: Build package
         run: |
+          set -o pipefail
           make package FINALPACKAGE=1 2>&1 | tee build.log
 
       - name: Collect deb
+        if: always()
         run: |
           mkdir -p out
           find . -maxdepth 1 -name "*.deb" -exec cp {} out/ \;
-          ls -la out/
+          ls -la out/ || true
 
       - name: Upload deb
         if: always()
