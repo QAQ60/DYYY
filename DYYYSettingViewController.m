@@ -1160,7 +1160,20 @@ NSDictionary *getCurrentABTestData(void) {
                 [DYYYSettingItem itemWithTitle:@"简化侧边栏" key:@"DYYYStreamlinethesidebar" type:DYYYSettingItemTypeSwitch]
             ],
 
-            // 第六部分 - 图标自定义功能
+            // 第六部分 - 认证伪装（本地渲染层伪装，不影响服务端与他人视角）
+            @[
+                [DYYYSettingItem itemWithTitle:@"认证伪装-开关" key:@"DYYYEnableVerifySpoof" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -全局生效" key:@"DYYYVerifySpoofGlobal" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -认证文案" key:@"DYYYVerifySpoofText" type:DYYYSettingItemTypeTextField placeholder:@"留空则使用类型默认文案"],
+                [DYYYSettingItem itemWithTitle:@"  -认证颜色" key:@"DYYYVerifySpoofColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制，留空用类型默认色"],
+                [DYYYSettingItem itemWithTitle:@"  -个人认证（黄V）" key:@"DYYYVerifySpoofType_Personal" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -企业认证（蓝V）" key:@"DYYYVerifySpoofType_Enterprise" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -音乐人认证" key:@"DYYYVerifySpoofType_Musician" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -创作者认证" key:@"DYYYVerifySpoofType_Creator" type:DYYYSettingItemTypeSwitch],
+                [DYYYSettingItem itemWithTitle:@"  -商家认证" key:@"DYYYVerifySpoofType_Merchant" type:DYYYSettingItemTypeSwitch]
+            ],
+
+            // 第七部分 - 图标自定义功能
             @[
                 [DYYYSettingItem itemWithTitle:@"未点赞图标" key:@"DYYYIconLikeBefore" type:DYYYSettingItemTypeTextField placeholder:@"点击选择图片"],
                 [DYYYSettingItem itemWithTitle:@"已点赞图标" key:@"DYYYIconLikeAfter" type:DYYYSettingItemTypeTextField placeholder:@"点击选择图片"],
@@ -1170,7 +1183,7 @@ NSDictionary *getCurrentABTestData(void) {
                 [DYYYSettingItem itemWithTitle:@"分享的图标" key:@"DYYYIconShare" type:DYYYSettingItemTypeTextField placeholder:@"点击选择图片"]
             ],
             
-            // 第七部分 - 清理功能
+            // 第八部分 - 清理功能
             @[
                 [DYYYSettingItem itemWithTitle:@"清除设置" key:@"DYYYCleanSettings" type:DYYYSettingItemTypeSwitch],
                 [DYYYSettingItem itemWithTitle:@"清理缓存" key:@"DYYYCleanCache" type:DYYYSettingItemTypeSwitch],
@@ -1179,7 +1192,7 @@ NSDictionary *getCurrentABTestData(void) {
                 [DYYYSettingItem itemWithTitle:@"一键自检" key:@"DYYYSelfTest" type:DYYYSettingItemTypeButton]
             ],
             
-            // 第八部分 - 热更新功能
+            // 第九部分 - 热更新功能
             @[
                 [DYYYSettingItem itemWithTitle:@"禁用下发配置" key:@"DYYYABTestBlockEnabled" type:DYYYSettingItemTypeSwitch],
                 [DYYYSettingItem itemWithTitle:@"启用补丁模式" key:@"DYYYABTestPatchEnabled" type:DYYYSettingItemTypeSwitch],
@@ -1497,6 +1510,7 @@ NSDictionary *getCurrentABTestData(void) {
                           @"隐藏设置",
                           @"移除设置",
                           @"增强功能",
+                          @"认证伪装",
                           @"图标",
                           @"清理&备份",
                           @"热更新",

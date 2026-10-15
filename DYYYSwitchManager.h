@@ -26,6 +26,12 @@ NS_ASSUME_NONNULL_BEGIN
                                tableView:(UITableView *)tableView
                         settingSections:(NSArray<NSArray<DYYYSettingItem *> *> *)settingSections;
 
+// 更新互斥开关（认证伪装的认证类型）
+- (void)updateVerifySpoofExclusiveSwitches:(NSInteger)section
+                          excludingItemKey:(NSString *)excludedKey
+                                 tableView:(UITableView *)tableView
+                          settingSections:(NSArray<NSArray<DYYYSettingItem *> *> *)settingSections;
+
 // 更新子开关状态
 - (void)updateSubSwitchesInSection:(NSInteger)section 
                           withKeys:(NSArray<NSString *> *)keys 

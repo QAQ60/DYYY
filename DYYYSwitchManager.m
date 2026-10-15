@@ -17,6 +17,14 @@
 // 全局锁来保护设置修改
 static NSLock *settingsLock = nil;
 
+@interface DYYYSwitchManager ()
+// 认证伪装的认证类型键（互斥组）
+- (NSArray<NSString *> *)verifySpoofTypeKeys;
+@end
+
+// 认证伪装：开关变更后立即刷新当前界面上的认证条（实现见 DYYYVerifySpoof.xm）
+extern void DYYYVerifySpoofRefreshUI(void);
+
 @implementation DYYYSwitchManager
 
 + (void)initialize {
@@ -61,6 +69,16 @@ static NSLock *settingsLock = nil;
                                   excludingItemKey:item.key 
                                          tableView:tableView 
                                   settingSections:settingSections];
+        }
+
+        // 互斥逻辑：认证类型只能选一个
+        NSArray<NSString *> *verifyTypeKeys = [self verifySpoofTypeKeys];
+        if ([verifyTypeKeys containsObject:item.key] && [sender isOn]) {
+            [self updateVerifySpoofExclusiveSwitches:section
+                                    excludingItemKey:item.key
+                                           tableView:tableView
+                                    settingSections:settingSections];
+            DYYYVerifySpoofRefreshUI();
         }
 
         // 清屏功能总开关 - 只在从关闭变为打开时自动开启所有子功能
@@ -161,6 +179,49 @@ static NSLock *settingsLock = nil;
                     UISwitch *cellSwitch = (UISwitch *)accessoryView;
                     [cellSwitch setOn:NO animated:NO];
                 }
+        }
+    }
+    [defaults synchronize];
+}
+
+// 认证伪装的认证类型键（互斥组）
+- (NSArray<NSString *> *)verifySpoofTypeKeys {
+    return @[
+        @"DYYYVerifySpoofType_Personal",
+        @"DYYYVerifySpoofType_Enterprise",
+        @"DYYYVerifySpoofType_Musician",
+        @"DYYYVerifySpoofType_Creator",
+        @"DYYYVerifySpoofType_Merchant"
+    ];
+}
+
+- (void)updateVerifySpoofExclusiveSwitches:(NSInteger)section 
+                          excludingItemKey:(NSString *)excludedKey
+                                 tableView:(UITableView *)tableView
+                          settingSections:(NSArray<NSArray<DYYYSettingItem *> *> *)settingSections {
+    
+    if (section >= settingSections.count) {
+        return;
+    }
+    
+    NSArray<DYYYSettingItem *> *sectionItems = settingSections[section];
+    NSArray<NSString *> *typeKeys = [self verifySpoofTypeKeys];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    
+    for (NSUInteger row = 0; row < sectionItems.count; row++) {
+        DYYYSettingItem *item = sectionItems[row];
+        if ([typeKeys containsObject:item.key] && ![item.key isEqualToString:excludedKey]) {
+            
+            // 先更新数据
+            [defaults setBool:NO forKey:item.key];
+            
+            // 再更新UI（如果cell可见）
+            NSIndexPath *cellPath = [NSIndexPath indexPathForRow:row inSection:section];
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:cellPath];
+            id accessoryView = cell ? [cell valueForKey:@"accessoryView"] : nil;
+            if (accessoryView && [accessoryView isKindOfClass:[UISwitch class]]) {
+                [(UISwitch *)accessoryView setOn:NO animated:NO];
+            }
         }
     }
     [defaults synchronize];
@@ -296,6 +357,29 @@ static NSLock *settingsLock = nil;
     // 处理视频自定义总开关
     else if ([key isEqualToString:@"DYYYEnableVideoStatsCustom"]) {
         // 这里不需要更新子开关，因为它们是文本框，不是开关
+    }
+    // 处理认证伪装总开关
+    else if ([key isEqualToString:@"DYYYEnableVerifySpoof"]) {
+        // 认证类型是互斥组，不能整体点亮；仅在没有选中任何类型时补一个默认的「个人认证」
+        if (enabled) {
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            NSArray<NSString *> *typeKeys = [self verifySpoofTypeKeys];
+            BOOL hasSelectedType = NO;
+            for (NSString *typeKey in typeKeys) {
+                if ([defaults boolForKey:typeKey]) {
+                    hasSelectedType = YES;
+                    break;
+                }
+            }
+            if (!hasSelectedType) {
+                [self updateSubSwitchesInSection:section
+                                        withKeys:@[@"DYYYVerifySpoofType_Personal"]
+                                         enabled:YES
+                                       tableView:tableView
+                                settingSections:settingSections];
+            }
+        }
+        DYYYVerifySpoofRefreshUI();
     }
 }
 
@@ -541,6 +625,9 @@ static NSLock *settingsLock = nil;
     }
     else if ([item.key isEqualToString:@"DYYYABTestPatchEnabled"]) {
         message = enabled ? @"已启用ABTest补丁模式" : @"已关闭ABTest补丁模式";
+    }
+    else if ([item.key isEqualToString:@"DYYYEnableVerifySpoof"]) {
+        message = enabled ? @"认证伪装已启用（仅本机渲染，不影响他人）" : @"认证伪装已关闭";
     }
     
     if (message) {
