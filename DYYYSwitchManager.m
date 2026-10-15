@@ -23,6 +23,7 @@ static NSLock *settingsLock = nil;
 @end
 
 // 认证伪装：开关变更后立即刷新当前界面上的认证条（实现见 DYYYVerifySpoof.xm）
+// 该函数在 .xm（ObjC++）侧以 extern "C" 定义，此处为 C 编译单元，直接声明即可链接。
 extern void DYYYVerifySpoofRefreshUI(void);
 
 @implementation DYYYSwitchManager
