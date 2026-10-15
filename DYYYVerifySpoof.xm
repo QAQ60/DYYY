@@ -297,6 +297,12 @@ static NSArray<UIWindow *> *DYYYVerifyAllWindows(void) {
 }
 
 // 供设置页开关调用：立即刷新当前界面上的认证条
+// 注意：.xm 以 Objective-C++ 编译，跨 TU 导出必须 extern "C"，
+// 否则符号会被 C++ name mangling，导致 DYYYSwitchManager.m（C 编译单元）链接失败。
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void DYYYVerifySpoofRefreshUI(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!DYYYVerifySpoofEnabled()) {
@@ -308,6 +314,10 @@ void DYYYVerifySpoofRefreshUI(void) {
         }
     });
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 %hook AWEUserNameLabel
 
