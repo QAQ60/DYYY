@@ -1,0 +1,58 @@
+name: Build DYYY++ deb
+
+on:
+  push:
+    branches:
+      - feat/verify-spoof
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain info
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install Theos
+        run: |
+          export THEOS="$HOME/theos"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch iOS SDKs
+        run: |
+          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
+          ls "$THEOS/sdks" | head
+
+      - name: Ensure ldid
+        run: brew install ldid || true
+
+      - name: Build package
+        run: |
+          make package FINALPACKAGE=1 2>&1 | tee build.log
+
+      - name: Collect deb
+        run: |
+          mkdir -p out
+          find . -maxdepth 1 -name "*.deb" -exec cp {} out/ \;
+          ls -la out/
+
+      - name: Upload deb
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyyy-deb
+          path: |
+            out/*.deb
+            build.log
+          if-no-files-found: warn
