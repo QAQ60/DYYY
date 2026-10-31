@@ -40,6 +40,9 @@ static CGFloat gStartVal = 0.0;
 static DYEdgeMode gMode = DYEdgeModeNone;
 static __weak UICollectionView *gFeedCV = nil;
 
+// 音乐条目的文本写入回调定义在文件后半段，这里先声明给前面的 UILabel hook 用。
+static void DYYYMusicEntryConsiderTextChange(UIView *view);
+
 static const CGFloat kInvalidAlpha = -1.0;
 static const CGFloat kInvalidHeight = -1.0;
 static const NSUInteger kDYYYPOIAnchorType = 2;
@@ -4723,6 +4726,9 @@ static BOOL isGestureActive = NO;
     }
 
     %orig(text);
+
+    // 音符文案复用同一个 label 时，只有文本写入这一拍能拿到信号（定义在音乐条目段）。
+    DYYYMusicEntryConsiderTextChange(self);
 }
 %end
 
@@ -7278,14 +7284,21 @@ static void DYYYMusicEntryConsiderTextChange(UIView *view) {
 
 %hook UILabel
 
-- (void)setText:(NSString *)text {
+// setText: 已在前面的 UILabel hook 里统一处理（同一文件内不能重复定义），
+// 这里只补富文本写入这一条路径。
+- (void)setAttributedText:(NSAttributedString *)attributedText {
     %orig;
     if (gDYYYMusicEntryGlobalActive) {
         DYYYMusicEntryConsiderTextChange(self);
     }
 }
 
-- (void)setAttributedText:(NSAttributedString *)attributedText {
+%end
+
+// 抖音的音乐文案常用 YYLabel，走的是自己的文本管线，不经过 UILabel 的 setText:。
+%hook YYLabel
+
+- (void)setText:(NSString *)text {
     %orig;
     if (gDYYYMusicEntryGlobalActive) {
         DYYYMusicEntryConsiderTextChange(self);
