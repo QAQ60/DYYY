@@ -7248,6 +7248,52 @@ static void DYYYMusicEntryHandleAttachedView(UIView *view) {
     DYYYMusicEntryConsiderCandidate(view.superview, view);
 }
 
+// 复用按钮时抖音不会新建视图，只把 label 的文字换掉：歌名→「拍同款」。
+// 这种情况下没有 addSubview、也没有布局变化，只能从文本写入这一拍拿信号。
+static void DYYYMusicEntryConsiderTextChange(UIView *view) {
+    if (!gDYYYMusicEntryGlobalActive || !view) {
+        return;
+    }
+    if (![NSThread isMainThread]) {
+        return;
+    }
+    UIView *host = view.superview;
+    if (!host || !objc_getAssociatedObject(host, &kDYYYMusicEntryHostKey)) {
+        return;
+    }
+    UIView *owner = DYYYMusicEntryNearestButton(view, 280.0);
+    if (!owner) {
+        return;
+    }
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSNumber *lastScan = objc_getAssociatedObject(owner, &kDYYYMusicEntryHostScanKey);
+    if (lastScan && (now - lastScan.doubleValue) < 0.1) {
+        return;
+    }
+    objc_setAssociatedObject(owner, &kDYYYMusicEntryHostScanKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(owner, &kDYYYMusicEntryStructureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(owner, &kDYYYMusicEntryLastScanTimeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DYYYApplyMusicEntryAppearanceToButton(owner);
+}
+
+%hook UILabel
+
+- (void)setText:(NSString *)text {
+    %orig;
+    if (gDYYYMusicEntryGlobalActive) {
+        DYYYMusicEntryConsiderTextChange(self);
+    }
+}
+
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    %orig;
+    if (gDYYYMusicEntryGlobalActive) {
+        DYYYMusicEntryConsiderTextChange(self);
+    }
+}
+
+%end
+
 %hook AWEPlayInteractionFollowPromptView
 
 - (void)layoutSubviews {
