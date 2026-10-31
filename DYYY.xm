@@ -6284,6 +6284,41 @@ static char kDYYYMusicEntryLastAlphaKey;
 static char kDYYYMusicEntryLastScanTimeKey;
 static char kDYYYMusicEntryTargetBaseHiddenKey;
 static char kDYYYMusicEntryStructureKey;
+static char kDYYYMusicEntryHostKey;
+
+// 全局挂载回调每秒要跑上百次，这里把「功能是否开启 / 目标透明度」缓存下来，
+// 让热路径只做一次布尔判断，不再反复读 NSUserDefaults。
+static BOOL gDYYYMusicEntryGlobalActive = NO;
+static CGFloat gDYYYMusicEntryGlobalAlpha = 1.0;
+
+static void DYYYMusicEntryRefreshGlobalState(void) {
+    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
+    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
+    if (!shouldHide && configuredAlpha < 0.0) {
+        gDYYYMusicEntryGlobalActive = NO;
+        gDYYYMusicEntryGlobalAlpha = 1.0;
+        return;
+    }
+    CGFloat targetAlpha = shouldHide ? kDYYYMusicEntryInvisibleAlpha : configuredAlpha;
+    if (targetAlpha < kDYYYMusicEntryInvisibleAlpha) {
+        targetAlpha = kDYYYMusicEntryInvisibleAlpha;
+    }
+    gDYYYMusicEntryGlobalActive = YES;
+    gDYYYMusicEntryGlobalAlpha = MIN(targetAlpha, 1.0);
+}
+
+static void DYYYMusicEntryInstallGlobalState(void) {
+    DYYYMusicEntryRefreshGlobalState();
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+        DYYYMusicEntryRefreshGlobalState();
+        }];
+    });
+}
 
 static BOOL DYYYMusicEntryTextIsCount(NSString *text) {
     if (![text isKindOfClass:[NSString class]]) {
@@ -6864,13 +6899,14 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
         return;
     }
 
-    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
-    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
+    // 与全局挂载拦截共用同一份缓存，保证两条路径算出来的透明度完全一致。
+    DYYYMusicEntryRefreshGlobalState();
+    BOOL active = gDYYYMusicEntryGlobalActive;
 
     NSArray *previousTargets = objc_getAssociatedObject(button, &kDYYYMusicEntryTargetsKey);
 
     // 功能没开：把上次改过的 alpha 还原。
-    if (!shouldHide && configuredAlpha < 0.0) {
+    if (!active) {
         if (previousTargets.count > 0) {
             DYYYRestoreMusicEntryTargets(previousTargets);
             objc_setAssociatedObject(button, &kDYYYMusicEntryTargetsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -6879,7 +6915,7 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
         return;
     }
 
-    CGFloat targetAlpha = shouldHide ? kDYYYMusicEntryInvisibleAlpha : configuredAlpha;
+    CGFloat targetAlpha = gDYYYMusicEntryGlobalAlpha;
     if (targetAlpha < kDYYYMusicEntryInvisibleAlpha) {
         targetAlpha = kDYYYMusicEntryInvisibleAlpha;
     }
@@ -6932,6 +6968,18 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
 static NSHashTable *gDYYYMusicButtons;
 static NSTimer *gDYYYMusicWatchdog;
 
+// 给音乐按钮上方三层容器打标记：之后这些容器里新增的任何子视图，
+// 都能用一次关联查表（O(1)）判断「要不要管」，不用再猜父级是谁。
+static void DYYYMusicEntryMarkHostChain(UIView *button) {
+    UIView *cursor = button.superview;
+    for (NSInteger depth = 0; cursor && depth < 3; depth++, cursor = cursor.superview) {
+        if ([cursor isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        objc_setAssociatedObject(cursor, &kDYYYMusicEntryHostKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 static void DYYYMusicEntryRegisterButton(UIView *button) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -6939,11 +6987,12 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
     });
     if (button) {
         [gDYYYMusicButtons addObject:button];
+        DYYYMusicEntryMarkHostChain(button);
     }
     if (gDYYYMusicWatchdog) {
         return;
     }
-    gDYYYMusicWatchdog = [NSTimer timerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *timer) {
+    gDYYYMusicWatchdog = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
         for (UIView *candidate in gDYYYMusicButtons.allObjects) {
             if (candidate.window) {
                 DYYYApplyMusicEntryAppearanceToButton(candidate);
@@ -7011,6 +7060,131 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
 }
 
 %end
+
+// —— 全局挂载拦截 ——
+// 教训：定时巡检在切视频时会被主线程排队（解码 + 布局把主线程占满，150ms 的 timer
+// 能拖到两三秒），这就是「刷下一个视频要等一会儿才隐藏」的根因。
+// 改成事件驱动：抖音补挂「拍同款」徽标本质是 addSubview，在 didAddSubview /
+// didMoveToWindow 里同步处理，首帧渲染前透明度就已经压好，不会再亮一下。
+static BOOL DYYYMusicEntryClassLooksLikeMusicButton(UIView *view) {
+    NSString *className = NSStringFromClass(view.class);
+    if (className.length == 0) {
+        return NO;
+    }
+    if ([className containsString:@"MusicCoverButton"]) {
+        return YES;
+    }
+    return [className containsString:@"Music"] && [className containsString:@"Button"];
+}
+
+static UIView *DYYYMusicEntryNearestButton(UIView *view, CGFloat maxDistance) {
+    if (!view.window || gDYYYMusicButtons.count == 0) {
+        return nil;
+    }
+    CGRect rect = [view convertRect:view.bounds toView:view.window];
+    CGPoint center = CGPointMake(CGRectGetMidX(rect), CGRectGetMidY(rect));
+    UIView *nearest = nil;
+    CGFloat nearestDistance = CGFLOAT_MAX;
+    for (UIView *button in gDYYYMusicButtons.allObjects) {
+        if (!button.window || button == view) {
+            continue;
+        }
+        CGRect buttonRect = [button convertRect:button.bounds toView:view.window];
+        CGFloat dx = CGRectGetMidX(buttonRect) - center.x;
+        CGFloat dy = CGRectGetMidY(buttonRect) - center.y;
+        CGFloat distance = sqrt(dx * dx + dy * dy);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearest = button;
+        }
+    }
+    return (nearest && nearestDistance <= maxDistance) ? nearest : nil;
+}
+
+static BOOL DYYYMusicEntryTargetsCoverView(UIView *button, UIView *view) {
+    NSArray *targets = objc_getAssociatedObject(button, &kDYYYMusicEntryTargetsKey);
+    for (UIView *target in targets) {
+        if (target == view || [view isDescendantOfView:target]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 清掉结构签名与扫描时间戳，跳过快速路径，逼按钮立刻重扫一次。
+// 已在目标集合里的视图直接返回，天然去重，不需要额外节流。
+static void DYYYMusicEntryRequestRescan(UIView *button, UIView *candidate) {
+    if (!button || !candidate) {
+        return;
+    }
+    if (DYYYMusicEntryTargetsCoverView(button, candidate)) {
+        return;
+    }
+    objc_setAssociatedObject(button, &kDYYYMusicEntryStructureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYMusicEntryLastScanTimeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DYYYApplyMusicEntryAppearanceToButton(button);
+}
+
+static void DYYYMusicEntryConsiderCandidate(UIView *host, UIView *candidate) {
+    if (!gDYYYMusicEntryGlobalActive || !candidate) {
+        return;
+    }
+    // 视图树只在主线程变动，子线程的挂载事件不参与判定，避免读到半成品层级。
+    if (![NSThread isMainThread]) {
+        return;
+    }
+
+    if (DYYYMusicEntryClassLooksLikeMusicButton(candidate)) {
+        DYYYMusicEntryRegisterButton(candidate);
+        DYYYApplyMusicEntryAppearanceToButton(candidate);
+        return;
+    }
+
+    // host 没打标记说明这块视图跟音乐条目没关系，直接放行。
+    // 这是整条热路径上唯一的额外开销：一次关联查表。
+    if (!host || !objc_getAssociatedObject(host, &kDYYYMusicEntryHostKey)) {
+        return;
+    }
+
+    CGRect frame = candidate.frame;
+    CGFloat width = CGRectGetWidth(frame);
+    CGFloat height = CGRectGetHeight(frame);
+    if (width > 320.0 || height > 110.0) {
+        return;
+    }
+
+    NSString *text = DYYYMusicEntryCaptionSourceText(candidate);
+    if (text.length == 0 || !DYYYMusicEntryTextIsCaption(text)) {
+        return;
+    }
+
+    // 只认紧贴音乐按钮的「拍同款/玩同款」，别处的同名字样不动。
+    UIView *owner = DYYYMusicEntryNearestButton(candidate, 280.0);
+    if (!owner) {
+        return;
+    }
+    DYYYMusicEntryRequestRescan(owner, candidate);
+
+    // 有些版本先 addSubview 再设 frame，这一拍几何还不可用，下一轮 runloop 补一次。
+    if (width <= 1.0 || height <= 1.0) {
+        __weak UIView *weakOwner = owner;
+        __weak UIView *weakCandidate = candidate;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIView *strongOwner = weakOwner;
+            UIView *strongCandidate = weakCandidate;
+            if (strongOwner && strongCandidate) {
+                DYYYMusicEntryRequestRescan(strongOwner, strongCandidate);
+            }
+        });
+    }
+}
+
+static void DYYYMusicEntryHandleAttachedView(UIView *view) {
+    if (!gDYYYMusicEntryGlobalActive || !view || !view.window) {
+        return;
+    }
+    DYYYMusicEntryConsiderCandidate(view.superview, view);
+}
 
 %hook AWEPlayInteractionFollowPromptView
 
@@ -11823,6 +11997,9 @@ static Class tabBarButtonClass = nil;
         return;
     }
 
+    // 音乐条目：抖音补挂「拍同款」徽标就是这一步，同步处理掉，不留给定时器。
+    DYYYMusicEntryConsiderCandidate(self, subview);
+
     BOOL hasSuppressedChrome = objc_getAssociatedObject(self, &kDYYYAvatarActionChromeViewKey) != nil;
     BOOL isAvatarFollowScope = objc_getAssociatedObject(self, &kDYYYAvatarFollowScopeViewKey) != nil;
     if ((!hasSuppressedChrome && !isAvatarFollowScope) || !DYYYAvatarFollowOptionsEnabled()) {
@@ -11851,6 +12028,11 @@ static Class tabBarButtonClass = nil;
         [hideButton registerViewForHiding:self];
     } else if (!hideButton.isElementsHidden) {
         DYYYRestoreClearTargetViewStateIfNeeded(self);
+    }
+
+    // 音乐条目：整棵新树一次性入窗（切视频换页）时，这里就是最早的一拍。
+    if (self.window) {
+        DYYYMusicEntryHandleAttachedView(self);
     }
 }
 
@@ -13529,6 +13711,7 @@ static void findTargetViewInView(UIView *view) {
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
+    DYYYMusicEntryInstallGlobalState();
 
     Class interactionBaseLabelClass = objc_getClass("AWECommentSwiftBizUI.CommentInteractionBaseLabel");
     if (interactionBaseLabelClass) {
