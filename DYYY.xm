@@ -6283,6 +6283,7 @@ static char kDYYYMusicEntryTargetBaseAlphaKey;
 static char kDYYYMusicEntryLastAlphaKey;
 static char kDYYYMusicEntryLastScanTimeKey;
 static char kDYYYMusicEntryTargetBaseHiddenKey;
+static char kDYYYMusicEntryStructureKey;
 
 static BOOL DYYYMusicEntryTextIsCount(NSString *text) {
     if (![text isKindOfClass:[NSString class]]) {
@@ -6805,6 +6806,53 @@ static void DYYYRestoreMusicEntryTargets(NSArray *targets) {
     }
 }
 
+// 抖音切视频时不会重建按钮，只是往容器里补挂「拍同款」徽标。
+// 用一个深搜计数当作结构签名：数字一变就说明有新控件挂上来了，立刻重扫。
+static NSInteger DYYYMusicEntryStructureCount(UIView *root, NSInteger budget) {
+    if (!root) {
+        return 0;
+    }
+    NSInteger count = 0;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    while (stack.count > 0 && budget > 0) {
+        budget--;
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        count++;
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+    }
+    return count;
+}
+
+// 单目标应用：包含按钮的一律只改 alpha（保证 0 透明仍可点击），其余在 0 档直接 hidden。
+static void DYYYMusicEntryApplyToView(UIView *view, UIView *button, CGFloat targetAlpha) {
+    if (![view isKindOfClass:[UIView class]]) {
+        return;
+    }
+    NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey);
+    if (!baseAlpha) {
+        objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey, @(view.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    BOOL containsButton = (view == button) || [button isDescendantOfView:view];
+    if (!containsButton && targetAlpha <= 0.02) {
+        NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey);
+        if (!baseHidden) {
+            objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey, @(view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!view.hidden) {
+            view.hidden = YES;
+        }
+        return;
+    }
+
+    if (fabs(view.alpha - targetAlpha) > 0.001) {
+        view.alpha = targetAlpha;
+    }
+}
+
 static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
     if (!button) {
         return;
@@ -6843,14 +6891,18 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
     NSNumber *lastScanAt = objc_getAssociatedObject(button, &kDYYYMusicEntryLastScanTimeKey);
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
 
-    // 滚动时抖音会反复把 alpha 改回去。0.25s 内不做全窗口重扫，只把上次的目标再压一遍。
-    if (previousTargets.count > 0 && lastAlpha &&
-        fabs(lastAlpha.doubleValue - targetAlpha) < 0.001 &&
-        lastScanAt && (now - lastScanAt.doubleValue) < 0.25) {
+    // 切视频时抖音不重建按钮，只往音乐容器里补挂新控件（「拍同款」徽标、歌名）。
+    // 用结构计数当签名：数字一变就重扫；否则只做轻量重压，避免高频率全窗口遍历。
+    UIView *structureRoot = button.superview.superview ?: button.superview;
+    NSInteger structure = DYYYMusicEntryStructureCount(structureRoot, 400);
+    NSNumber *lastStructure = objc_getAssociatedObject(button, &kDYYYMusicEntryStructureKey);
+    BOOL structureChanged = (!lastStructure || lastStructure.integerValue != structure);
+    BOOL alphaChanged = (!lastAlpha || fabs(lastAlpha.doubleValue - targetAlpha) > 0.001);
+    BOOL scanExpired = (!lastScanAt || (now - lastScanAt.doubleValue) >= 0.5);
+
+    if (previousTargets.count > 0 && !structureChanged && !alphaChanged && !scanExpired) {
         for (UIView *view in previousTargets) {
-            if ([view isKindOfClass:[UIView class]] && fabs(view.alpha - targetAlpha) > 0.001) {
-                view.alpha = targetAlpha;
-            }
+            DYYYMusicEntryApplyToView(view, button, targetAlpha);
         }
         return;
     }
@@ -6866,35 +6918,13 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
     }
 
     for (UIView *view in targets) {
-        NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey);
-        if (!baseAlpha) {
-            objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey, @(view.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-
-        // 音乐按钮本身（以及包含它的外壳）永远只改 alpha，保证 0 透明时仍可点击。
-        // 文案/卡片这类目标没有点击义务，0 档直接 hidden —— 抖音对这块有自绘动画，
-        // 只改 alpha 会被它的动画覆盖掉，hidden 才是稳的。
-        BOOL containsButton = (view == button) || [button isDescendantOfView:view];
-        BOOL invisible = targetAlpha <= 0.02;
-        if (!containsButton && invisible) {
-            NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey);
-            if (!baseHidden) {
-                objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey, @(view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            if (!view.hidden) {
-                view.hidden = YES;
-            }
-            continue;
-        }
-
-        if (fabs(view.alpha - targetAlpha) > 0.001) {
-            view.alpha = targetAlpha;
-        }
+        DYYYMusicEntryApplyToView(view, button, targetAlpha);
     }
 
     objc_setAssociatedObject(button, &kDYYYMusicEntryTargetsKey, [targets copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(button, &kDYYYMusicEntryLastAlphaKey, @(targetAlpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(button, &kDYYYMusicEntryLastScanTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYMusicEntryStructureKey, @(structure), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // 音乐信息是异步下发的：歌名和「拍同款」常常在按钮完成布局之后才出现，
@@ -6913,7 +6943,7 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
     if (gDYYYMusicWatchdog) {
         return;
     }
-    gDYYYMusicWatchdog = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+    gDYYYMusicWatchdog = [NSTimer timerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *timer) {
         for (UIView *candidate in gDYYYMusicButtons.allObjects) {
             if (candidate.window) {
                 DYYYApplyMusicEntryAppearanceToButton(candidate);
@@ -6936,11 +6966,15 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
     if (!self.window) {
         return;
     }
+    // 命中模板视频时，这个按钮的辅助标签会变成「拍同款」，不能因此跳过。
     NSString *musicLabel = self.accessibilityLabel;
     if (musicLabel.length > 0 &&
         ![musicLabel containsString:@"音乐"] &&
         ![musicLabel containsString:@"Music"] &&
-        ![musicLabel containsString:@"music"]) {
+        ![musicLabel containsString:@"music"] &&
+        ![musicLabel containsString:@"歌曲"] &&
+        ![musicLabel containsString:@"拍同款"] &&
+        ![musicLabel containsString:@"玩同款"]) {
         return;
     }
     DYYYApplyMusicEntryAppearanceToButton(self);
