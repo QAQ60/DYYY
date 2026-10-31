@@ -6311,12 +6311,18 @@ static void DYYYMusicEntryInstallGlobalState(void) {
     DYYYMusicEntryRefreshGlobalState();
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *note) {
-        DYYYMusicEntryRefreshGlobalState();
-        }];
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        void (^refreshBlock)(NSNotification *) = ^(NSNotification *note) {
+          DYYYMusicEntryRefreshGlobalState();
+        };
+        [center addObserverForName:NSUserDefaultsDidChangeNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:refreshBlock];
+        [center addObserverForName:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:refreshBlock];
     });
 }
 
@@ -7047,6 +7053,20 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
     }
 }
 
+// 抖音换容器时会把这个按钮摘下来再挂到新容器里，宿主的标记要跟着走，
+// 否则新容器里的「拍同款」徽标不会被 didAddSubview 认出来。
+- (void)didMoveToSuperview {
+    %orig;
+    if (!self.superview) {
+        return;
+    }
+    DYYYMusicEntryMarkHostChain(self);
+    if (self.window) {
+        DYYYMusicEntryRegisterButton(self);
+        [self dyyy_applyMusicEntryAppearanceIfNeeded];
+    }
+}
+
 - (void)dealloc {
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center removeObserver:self name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
@@ -7154,28 +7174,70 @@ static void DYYYMusicEntryConsiderCandidate(UIView *host, UIView *candidate) {
     }
 
     NSString *text = DYYYMusicEntryCaptionSourceText(candidate);
-    if (text.length == 0 || !DYYYMusicEntryTextIsCaption(text)) {
+    if (text.length == 0 || text.length > 48) {
         return;
     }
 
-    // 只认紧贴音乐按钮的「拍同款/玩同款」，别处的同名字样不动。
-    UIView *owner = DYYYMusicEntryNearestButton(candidate, 280.0);
-    if (!owner) {
+    if (DYYYMusicEntryTextIsCaption(text)) {
+        // 「拍同款/玩同款」是重点目标，别处出现同名字样时用距离兜住。
+        UIView *owner = DYYYMusicEntryNearestButton(candidate, 280.0);
+        if (!owner) {
+            return;
+        }
+        DYYYMusicEntryRequestRescan(owner, candidate);
+        if (width <= 1.0 || height <= 1.0) {
+            // 有些版本先 addSubview 再设 frame，这一拍几何还不可用，下一轮 runloop 补一次。
+            __weak UIView *weakOwner = owner;
+            __weak UIView *weakCandidate = candidate;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIView *strongOwner = weakOwner;
+                UIView *strongCandidate = weakCandidate;
+                if (strongOwner && strongCandidate) {
+                    DYYYMusicEntryRequestRescan(strongOwner, strongCandidate);
+                }
+            });
+        }
         return;
     }
-    DYYYMusicEntryRequestRescan(owner, candidate);
 
-    // 有些版本先 addSubview 再设 frame，这一拍几何还不可用，下一轮 runloop 补一次。
-    if (width <= 1.0 || height <= 1.0) {
-        __weak UIView *weakOwner = owner;
-        __weak UIView *weakCandidate = candidate;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UIView *strongOwner = weakOwner;
-            UIView *strongCandidate = weakCandidate;
-            if (strongOwner && strongCandidate) {
-                DYYYMusicEntryRequestRescan(strongOwner, strongCandidate);
-            }
-        });
+    // 歌名/作者名这类同排文案：容器已被标记，说明离音乐图标很近，
+    // 数字（点赞数）和右侧栏控件除外，其余交给完整重扫去做最终判定。
+    if (DYYYMusicEntryTextIsCount(text) || DYYYMusicEntryIsRailControl(candidate)) {
+        return;
+    }
+    if ([text containsString:@"点赞"] || [text containsString:@"评论"] ||
+        [text containsString:@"收藏"] || [text containsString:@"分享"]) {
+        return;
+    }
+    UIView *owner = DYYYMusicEntryNearestButton(candidate, 260.0);
+    if (owner) {
+        DYYYMusicEntryRequestRescan(owner, candidate);
+    }
+}
+
+// 容器完成布局 = 子视图 frame 全部就绪。这是切视频后的第一拍，
+// 在这一步把透明度压好，比任何定时器都早，而且改完当帧就渲染，用户看不到闪烁。
+static char kDYYYMusicEntryHostScanKey;
+
+static void DYYYMusicEntryRescanForHost(UIView *host) {
+    if (!host || gDYYYMusicButtons.count == 0) {
+        return;
+    }
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    for (UIView *button in gDYYYMusicButtons.allObjects) {
+        if (!button.window || ![button isDescendantOfView:host]) {
+            continue;
+        }
+        // 一帧里可能有多个容器先后布局，按按钮做全局限流，避免重复全窗扫描拖慢主线程。
+        NSNumber *lastScan = objc_getAssociatedObject(button, &kDYYYMusicEntryHostScanKey);
+        if (lastScan && (now - lastScan.doubleValue) < 0.1) {
+            return;
+        }
+        objc_setAssociatedObject(button, &kDYYYMusicEntryHostScanKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(button, &kDYYYMusicEntryStructureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(button, &kDYYYMusicEntryLastScanTimeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DYYYApplyMusicEntryAppearanceToButton(button);
+        return;
     }
 }
 
@@ -12083,6 +12145,12 @@ static Class tabBarButtonClass = nil;
             if (![vc isKindOfClass:%c(AWEPlayInteractionViewController)]) break;
             subview.hidden = YES;
         }
+    }
+
+    // 音乐条目：容器布局完成的那一拍就压好透明度，不等下一次巡检。
+    if (gDYYYMusicEntryGlobalActive &&
+        objc_getAssociatedObject(self, &kDYYYMusicEntryHostKey)) {
+        DYYYMusicEntryRescanForHost(self);
     }
 }
 
