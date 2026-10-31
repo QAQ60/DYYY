@@ -6245,6 +6245,9 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 }
 %end
 
+// UIKit 命中测试要求 alpha > 0.01，所以“不可见”用 0.011 表达：肉眼看不到但仍然可以点击。
+static const CGFloat kDYYYMusicEntryInvisibleAlpha = 0.011;
+
 static CGFloat DYYYConfiguredMusicEntryAlpha(void) {
     id value = [[NSUserDefaults standardUserDefaults] objectForKey:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY];
     if (!value) {
@@ -6271,26 +6274,36 @@ static CGFloat DYYYConfiguredMusicEntryAlpha(void) {
         return kInvalidAlpha;
     }
 
-    // UIKit 在 alpha <= 0.01 时会跳过命中测试，0 用 0.011 表达“不可见但可点击”。
+    // 0 表示“不可见但可点击”，改用略大于 0.01 的值，避免命中测试被跳过。
     if (alpha <= 0.0) {
-        return 0.011;
+        return kDYYYMusicEntryInvisibleAlpha;
     }
     return MIN(alpha, 1.0);
 }
 
 static char kDYYYMusicEntryTargetsKey;
 static char kDYYYMusicEntryTargetBaseAlphaKey;
-static char kDYYYMusicEntryTargetBaseHiddenKey;
 
-// 只把「音乐图标自己的视图」算进目标，点赞/评论/收藏/分享/拍同款都排除。
-static BOOL DYYYMusicEntryViewIsOtherAction(UIView *view, BOOL rejectUnknownControls) {
+static BOOL DYYYMusicEntryTextIsCount(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) {
+        return NO;
+    }
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0 || trimmed.length > 12) {
+        return NO;
+    }
+    NSCharacterSet *countCharacters = [NSCharacterSet characterSetWithCharactersInString:@"0123456789.万亿wWkK+"];
+    return [[trimmed stringByTrimmingCharactersInSet:countCharacters] length] == 0;
+}
+
+// 点赞/评论/收藏/分享/拍同款/头像这一整套交互都属于“其它操作”，音乐透明度一律不许碰。
+static BOOL DYYYMusicEntryViewIsForeignAction(UIView *view) {
     if (!view) {
         return NO;
     }
 
     NSString *className = NSStringFromClass(view.class);
-    NSArray<NSString *> *actionClassKeywords = @[@"LikeButton", @"CommentButton", @"ShareButton", @"FavoriteButton", @"CollectButton", @"TemplateButton"];
-    for (NSString *keyword in actionClassKeywords) {
+    for (NSString *keyword in @[ @"LikeButton", @"CommentButton", @"ShareButton", @"FavoriteButton", @"CollectButton", @"DiggButton", @"TemplateButton", @"AvatarView" ]) {
         if ([className containsString:keyword]) {
             return YES;
         }
@@ -6301,7 +6314,7 @@ static BOOL DYYYMusicEntryViewIsOtherAction(UIView *view, BOOL rejectUnknownCont
 
     NSString *accessibilityLabel = view.accessibilityLabel;
     if (accessibilityLabel.length > 0) {
-        for (NSString *keyword in @[@"点赞", @"评论", @"收藏", @"分享", @"拍同款", @"玩同款"]) {
+        for (NSString *keyword in @[ @"点赞", @"评论", @"收藏", @"分享", @"拍同款", @"玩同款", @"转发" ]) {
             if ([accessibilityLabel containsString:keyword]) {
                 return YES;
             }
@@ -6311,15 +6324,11 @@ static BOOL DYYYMusicEntryViewIsOtherAction(UIView *view, BOOL rejectUnknownCont
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
         NSString *text = label.text ?: label.attributedText.string;
-        text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (text.length > 0 && text.length <= 12) {
-            if ([text containsString:@"拍同款"] || [text containsString:@"玩同款"]) {
-                return YES;
-            }
-            NSCharacterSet *countCharacters = [NSCharacterSet characterSetWithCharactersInString:@"0123456789.万亿wWkK+"];
-            if ([[text stringByTrimmingCharactersInSet:countCharacters] length] == 0) {
-                return YES;
-            }
+        if (DYYYMusicEntryTextIsCount(text)) {
+            return YES;
+        }
+        if ([text containsString:@"拍同款"] || [text containsString:@"玩同款"]) {
+            return YES;
         }
     }
 
@@ -6331,66 +6340,86 @@ static BOOL DYYYMusicEntryViewIsOtherAction(UIView *view, BOOL rejectUnknownCont
         }
     }
 
-    if ([view isKindOfClass:[UIControl class]]) {
-        // 音乐图标本身可能也是 UIControl；只有类名带音乐含义时才放行。
-        NSArray<NSString *> *musicKeywords = @[@"Music", @"Cover", @"Disc", @"Vinyl", @"Album", @"Record", @"Player"];
-        for (NSString *keyword in musicKeywords) {
-            if ([className containsString:keyword]) {
-                return NO;
-            }
-        }
-        return rejectUnknownControls;
-    }
-
     return NO;
 }
 
-static BOOL DYYYMusicEntryViewContainsOtherAction(UIView *view, UIView *musicButton, NSInteger depth) {
-    if (!view || depth > 6) {
+// 不限深度地检查整棵子树（旧实现限制 4/6 层，右侧栏图标藏在更深处就会漏判）。
+static BOOL DYYYMusicEntrySubtreeHasForeignAction(UIView *root, UIView *skip) {
+    if (!root) {
         return NO;
     }
-    for (UIView *subview in view.subviews) {
-        if (subview == musicButton) {
-            continue;
-        }
-        if (DYYYMusicEntryViewIsOtherAction(subview, YES)) {
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger budget = 800;
+    while (stack.count > 0 && budget > 0) {
+        budget--;
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (view != root && view != skip && DYYYMusicEntryViewIsForeignAction(view)) {
             return YES;
         }
-        if (DYYYMusicEntryViewContainsOtherAction(subview, musicButton, depth + 1)) {
-            return YES;
+        for (UIView *subview in view.subviews) {
+            if (subview == skip) {
+                continue;
+            }
+            [stack addObject:subview];
         }
     }
     return NO;
 }
 
-static CGSize DYYYMusicEntryButtonSize(UIView *button) {
-    CGSize size = button.bounds.size;
-    if (size.width <= 0.0 || size.height <= 0.0) {
-        size = button.frame.size;
-    }
-    return size;
-}
-
-// 往上找只属于音乐图标的容器（黑胶底座、唱片环、封面都在里面）。
-// 找不到就返回 nil，绝不能为了淡黑胶而把整个右侧栏一起淡掉。
-static UIView *DYYYMusicEntrySafeContainer(UIView *button) {
-    CGSize buttonSize = DYYYMusicEntryButtonSize(button);
-    CGFloat maxWidth = MAX(buttonSize.width * 2.8, 150.0);
-    CGFloat maxHeight = MAX(buttonSize.height * 2.8, 150.0);
-
-    UIView *candidate = button.superview;
-    for (NSInteger depth = 0; candidate && depth < 5; depth++, candidate = candidate.superview) {
+static BOOL DYYYMusicEntryHasForeignAncestor(UIView *view, NSInteger maxDepth) {
+    UIView *candidate = view.superview;
+    for (NSInteger depth = 0; candidate && depth < maxDepth; depth++, candidate = candidate.superview) {
         if ([candidate isKindOfClass:[UIWindow class]]) {
             break;
         }
+        if (DYYYMusicEntryViewIsForeignAction(candidate)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 只接受“和音乐按钮几乎同尺寸、同中心”的纯装饰外壳（黑胶底座、唱片环）。
+// 右侧栏、文案区、底部操作条都比这个尺寸大得多，永远进不来。
+static UIView *DYYYMusicEntryDecorationWrapper(UIView *button) {
+    if (!button) {
+        return nil;
+    }
+
+    CGSize buttonSize = button.bounds.size;
+    if (buttonSize.width <= 0.0 || buttonSize.height <= 0.0) {
+        buttonSize = button.frame.size;
+    }
+    if (buttonSize.width <= 0.0 || buttonSize.height <= 0.0) {
+        return nil;
+    }
+
+    UIView *candidate = button.superview;
+    for (NSInteger depth = 0; candidate && depth < 2; depth++, candidate = candidate.superview) {
+        if ([candidate isKindOfClass:[UIWindow class]] || [candidate isKindOfClass:[UIScrollView class]]) {
+            return nil;
+        }
+
         CGSize size = candidate.bounds.size;
         if (size.width <= 0.0 || size.height <= 0.0) {
             continue;
         }
-        if (size.width > maxWidth || size.height > maxHeight) {
+        if (size.width > buttonSize.width + 16.0 || size.height > buttonSize.height + 16.0) {
             continue;
         }
-        if (DYYYMusicEntryViewContainsOtherAction(candidate, button, 0)) {
+        if (size.width < buttonSize.width - 1.0 || size.height < buttonSize.height - 1.0) {
+            continue;
+        }
+
+        CGRect buttonRect = [button convertRect:button.bounds toView:candidate];
+        if (fabs(CGRectGetMidX(buttonRect) - CGRectGetMidX(candidate.bounds)) > 12.0) {
+            continue;
+        }
+        if (fabs(CGRectGetMidY(buttonRect) - CGRectGetMidY(candidate.bounds)) > 12.0) {
+            continue;
+        }
+        if (DYYYMusicEntrySubtreeHasForeignAction(candidate, button)) {
             continue;
         }
         return candidate;
@@ -6398,99 +6427,150 @@ static UIView *DYYYMusicEntrySafeContainer(UIView *button) {
     return nil;
 }
 
-// 如果音乐图标没有独立容器，就只淡「按钮 + 与它重叠的装饰视图/图层」。
-// 点赞/评论/收藏/分享/数值文字都是 UIControl 或 UILabel，会被排除。
-static NSArray *DYYYMusicEntryFallbackTargets(UIView *button) {
-    NSMutableArray *targets = [NSMutableArray arrayWithObject:button];
-    UIView *parent = button.superview;
-    if (!parent) {
+// 优先按类名锁定“音乐区”容器（如 AWEPlayInteractionMusicView / AWEAwemeMusicInfoView）。
+// 命中后整块一起淡：图标和歌曲名都在里面，且不会越界到右侧栏。
+static UIView *DYYYMusicEntryMusicScopedContainer(UIView *button) {
+    if (!button) {
+        return nil;
+    }
+    CGSize buttonSize = button.bounds.size;
+    if (buttonSize.width <= 0.0 || buttonSize.height <= 0.0) {
+        buttonSize = button.frame.size;
+    }
+    if (buttonSize.width <= 0.0 || buttonSize.height <= 0.0) {
+        return nil;
+    }
+
+    UIView *candidate = button.superview;
+    for (NSInteger depth = 0; candidate && depth < 3; depth++, candidate = candidate.superview) {
+        if ([candidate isKindOfClass:[UIWindow class]] || [candidate isKindOfClass:[UIScrollView class]]) {
+            break;
+        }
+        NSString *className = NSStringFromClass(candidate.class);
+        BOOL musicNamed = [className containsString:@"Music"] || [className containsString:@"Song"] || [className containsString:@"Lyric"];
+        if (!musicNamed) {
+            continue;
+        }
+        CGSize size = candidate.bounds.size;
+        if (size.width <= 0.0 || size.height <= 0.0) {
+            continue;
+        }
+        if (size.width > MAX(buttonSize.width * 8.0, 480.0) || size.height > MAX(buttonSize.height * 3.0, 120.0)) {
+            continue;
+        }
+        if (DYYYMusicEntrySubtreeHasForeignAction(candidate, button)) {
+            continue;
+        }
+        return candidate;
+    }
+    return nil;
+}
+
+static void DYYYMusicEntryCollectTitleLabels(UIView *view, UIView *button, CGRect buttonRect, NSMutableArray<UIView *> *matches, NSInteger depth) {
+    if (!view || depth > 4 || matches.count >= 4) {
+        return;
+    }
+
+    if (view != button && [view isKindOfClass:[UILabel class]] && ![matches containsObject:view]) {
+        UILabel *label = (UILabel *)view;
+        NSString *text = label.text.length > 0 ? label.text : label.attributedText.string;
+        text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+        if (text.length > 0 && text.length <= 64 &&
+            ![text containsString:@"拍同款"] && ![text containsString:@"玩同款"] &&
+            !DYYYMusicEntryTextIsCount(text) &&
+            !DYYYMusicEntryViewIsForeignAction(label) &&
+            !DYYYMusicEntryHasForeignAncestor(label, 8)) {
+
+            CGRect rect = [label convertRect:label.bounds toView:nil];
+            CGFloat overlapBase = MIN(CGRectGetHeight(rect), CGRectGetHeight(buttonRect));
+            CGRect intersection = CGRectIntersection(rect, buttonRect);
+            BOOL overlapsVertically = !CGRectIsNull(intersection) && overlapBase > 0.0 && CGRectGetHeight(intersection) >= overlapBase * 0.5;
+            // 同一横排：中心不能偏出按钮高度的一半，避免把上方的文案/标题一起淡掉。
+            CGFloat verticalDistance = fabs(CGRectGetMidY(rect) - CGRectGetMidY(buttonRect));
+            BOOL sameRow = verticalDistance <= MAX(CGRectGetHeight(buttonRect) * 0.6, 12.0);
+            BOOL onTheRight = CGRectGetMinX(rect) >= CGRectGetMinX(buttonRect) - 6.0 &&
+                               CGRectGetMinX(rect) - CGRectGetMaxX(buttonRect) <= 600.0;
+            BOOL reasonableSize = CGRectGetWidth(rect) >= 8.0 && CGRectGetWidth(rect) <= 600.0 &&
+                                  CGRectGetHeight(rect) <= 44.0;
+
+            if (overlapsVertically && sameRow && onTheRight && reasonableSize) {
+                [matches addObject:label];
+            }
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        if (subview == button) {
+            continue;
+        }
+        DYYYMusicEntryCollectTitleLabels(subview, button, buttonRect, matches, depth + 1);
+    }
+}
+
+// 歌曲名只在音乐按钮所在的 1~2 层容器里找，且必须是“和按钮同一横排、在按钮右侧”的标签。
+static NSArray<UIView *> *DYYYMusicEntryTitleTargets(UIView *button) {
+    NSMutableArray<UIView *> *matches = [NSMutableArray array];
+    if (!button) {
+        return matches;
+    }
+
+    CGRect buttonRect = [button convertRect:button.bounds toView:nil];
+    if (CGRectGetWidth(buttonRect) <= 1.0 || CGRectGetHeight(buttonRect) <= 1.0) {
+        return matches;
+    }
+
+    UIView *root = button.superview;
+    for (NSInteger level = 0; root && level < 2; level++, root = root.superview) {
+        if ([root isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        DYYYMusicEntryCollectTitleLabels(root, button, buttonRect, matches, 0);
+        if (matches.count > 0) {
+            break;
+        }
+    }
+    return matches;
+}
+
+static NSArray *DYYYMusicEntryTargetsForButton(UIView *button) {
+    NSMutableArray *targets = [NSMutableArray array];
+    if (!button) {
         return targets;
     }
 
-    CGRect buttonFrame = button.frame;
-    CGFloat buttonArea = CGRectGetWidth(buttonFrame) * CGRectGetHeight(buttonFrame);
-    if (buttonArea <= 0.0) {
+    // 第一优先：按类名锁定音乐区容器，整块淡掉（图标 + 歌曲名）。
+    UIView *scopedContainer = DYYYMusicEntryMusicScopedContainer(button);
+    if (scopedContainer) {
+        [targets addObject:scopedContainer];
         return targets;
     }
 
-    for (UIView *sibling in parent.subviews) {
-        if (sibling == button) {
-            continue;
-        }
-        if ([sibling isKindOfClass:[UILabel class]]) {
-            continue;
-        }
-        if (DYYYMusicEntryViewIsOtherAction(sibling, NO)) {
-            continue;
-        }
-        if (DYYYMusicEntryViewContainsOtherAction(sibling, button, 0)) {
-            continue;
-        }
+    // 退路一：和按钮同尺寸的装饰外壳（黑胶底座、唱片环），与按钮二选一。
+    // 同时改两层 alpha 会相乘，导致整体 alpha 低于 0.01 反而点不动。
+    UIView *wrapper = DYYYMusicEntryDecorationWrapper(button);
+    [targets addObject:wrapper ?: button];
 
-        CGRect intersection = CGRectIntersection(sibling.frame, buttonFrame);
-        if (CGRectIsNull(intersection) || CGRectIsEmpty(intersection)) {
-            continue;
+    // 退路二：只淡歌曲名标签，标签不会被赋予点击能力，也不会连带图标。
+    for (UIView *label in DYYYMusicEntryTitleTargets(button)) {
+        if (![targets containsObject:label]) {
+            [targets addObject:label];
         }
-
-        CGFloat siblingArea = CGRectGetWidth(sibling.frame) * CGRectGetHeight(sibling.frame);
-        if (siblingArea <= 0.0 || siblingArea > buttonArea * 6.0) {
-            continue;
-        }
-
-        CGFloat overlapArea = CGRectGetWidth(intersection) * CGRectGetHeight(intersection);
-        if (overlapArea < MIN(buttonArea, siblingArea) * 0.12) {
-            continue;
-        }
-        [targets addObject:sibling];
     }
-
-    for (CALayer *layer in parent.layer.sublayers) {
-        if ([layer.delegate isKindOfClass:[UIView class]]) {
-            continue;
-        }
-        CGRect frame = layer.frame;
-        if (frame.size.width <= 0.0 || frame.size.height <= 0.0) {
-            continue;
-        }
-        CGRect intersection = CGRectIntersection(frame, buttonFrame);
-        if (CGRectIsNull(intersection) || CGRectIsEmpty(intersection)) {
-            continue;
-        }
-        CGFloat layerArea = frame.size.width * frame.size.height;
-        if (layerArea > buttonArea * 6.0) {
-            continue;
-        }
-        CGFloat overlapArea = CGRectGetWidth(intersection) * CGRectGetHeight(intersection);
-        if (overlapArea < MIN(buttonArea, layerArea) * 0.12) {
-            continue;
-        }
-        [targets addObject:layer];
-    }
-
     return targets;
 }
 
 static void DYYYRestoreMusicEntryTargets(NSArray *targets) {
-    for (id target in targets) {
-        NSNumber *baseAlpha = objc_getAssociatedObject(target, &kDYYYMusicEntryTargetBaseAlphaKey);
-        if (baseAlpha) {
-            if ([target isKindOfClass:[UIView class]]) {
-                ((UIView *)target).alpha = baseAlpha.doubleValue;
-            } else if ([target isKindOfClass:[CALayer class]]) {
-                ((CALayer *)target).opacity = baseAlpha.floatValue;
-            }
-            objc_setAssociatedObject(target, &kDYYYMusicEntryTargetBaseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIView *view in targets) {
+        if (![view isKindOfClass:[UIView class]]) {
+            continue;
         }
-
-        NSNumber *baseHidden = objc_getAssociatedObject(target, &kDYYYMusicEntryTargetBaseHiddenKey);
-        if (baseHidden) {
-            if ([target isKindOfClass:[UIView class]]) {
-                ((UIView *)target).hidden = baseHidden.boolValue;
-            } else if ([target isKindOfClass:[CALayer class]]) {
-                ((CALayer *)target).hidden = baseHidden.boolValue;
-            }
-            objc_setAssociatedObject(target, &kDYYYMusicEntryTargetBaseHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey);
+        if (!baseAlpha) {
+            continue;
         }
+        view.alpha = baseAlpha.doubleValue;
+        objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
 
@@ -6505,294 +6585,43 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
         return;
     }
 
-    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
-    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
-
     NSArray *previousTargets = objc_getAssociatedObject(button, &kDYYYMusicEntryTargetsKey);
     if (previousTargets.count > 0) {
         DYYYRestoreMusicEntryTargets(previousTargets);
         objc_setAssociatedObject(button, &kDYYYMusicEntryTargetsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
+    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
+    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
     if (!shouldHide && configuredAlpha < 0.0) {
         return;
     }
 
-    NSMutableArray *targets = [NSMutableArray array];
-    UIView *container = DYYYMusicEntrySafeContainer(button);
-    if (container) {
-        [targets addObject:container];
-    } else {
-        [targets addObjectsFromArray:DYYYMusicEntryFallbackTargets(button)];
+    CGFloat targetAlpha = shouldHide ? kDYYYMusicEntryInvisibleAlpha : configuredAlpha;
+    if (targetAlpha < kDYYYMusicEntryInvisibleAlpha) {
+        targetAlpha = kDYYYMusicEntryInvisibleAlpha;
     }
+    if (targetAlpha > 1.0) {
+        targetAlpha = 1.0;
+    }
+
+    NSArray *targets = DYYYMusicEntryTargetsForButton(button);
     if (targets.count == 0) {
         return;
     }
 
-    for (id target in targets) {
-        if ([target isKindOfClass:[UIView class]]) {
-            UIView *view = (UIView *)target;
-            NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey);
-            if (!baseAlpha) {
-                objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey, @(view.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey);
-            if (!baseHidden) {
-                objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseHiddenKey, @(view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            if (shouldHide) {
-                view.hidden = YES;
-            } else {
-                view.alpha = configuredAlpha;
-            }
-        } else if ([target isKindOfClass:[CALayer class]]) {
-            CALayer *layer = (CALayer *)target;
-            NSNumber *baseOpacity = objc_getAssociatedObject(layer, &kDYYYMusicEntryTargetBaseAlphaKey);
-            if (!baseOpacity) {
-                objc_setAssociatedObject(layer, &kDYYYMusicEntryTargetBaseAlphaKey, @(layer.opacity), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            NSNumber *baseHidden = objc_getAssociatedObject(layer, &kDYYYMusicEntryTargetBaseHiddenKey);
-            if (!baseHidden) {
-                objc_setAssociatedObject(layer, &kDYYYMusicEntryTargetBaseHiddenKey, @(layer.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            if (shouldHide) {
-                layer.hidden = YES;
-            } else {
-                layer.opacity = configuredAlpha;
-            }
+    for (UIView *view in targets) {
+        NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey);
+        if (!baseAlpha) {
+            objc_setAssociatedObject(view, &kDYYYMusicEntryTargetBaseAlphaKey, @(view.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        // 只动 alpha，不动 hidden：隐藏也必须保留点击能力。
+        if (fabs(view.alpha - targetAlpha) > 0.001) {
+            view.alpha = targetAlpha;
         }
     }
 
     objc_setAssociatedObject(button, &kDYYYMusicEntryTargetsKey, [targets copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static NSMutableArray<UIView *> *gDYYYMusicTemplateTrackedViews;
-static char kDYYYMusicTemplateBaseAlphaKey;
-static char kDYYYMusicTemplateBaseHiddenKey;
-
-static BOOL DYYYMusicTemplateTextMatches(NSString *text) {
-    if (![text isKindOfClass:[NSString class]]) {
-        return NO;
-    }
-    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (trimmed.length == 0 || trimmed.length > 12) {
-        return NO;
-    }
-    return [trimmed containsString:@"拍同款"] || [trimmed containsString:@"玩同款"];
-}
-
-static BOOL DYYYMusicTemplateViewIsProtected(UIView *view) {
-    if (!view) {
-        return NO;
-    }
-
-    NSString *className = NSStringFromClass(view.class);
-    for (NSString *keyword in @[@"LikeButton", @"CommentButton", @"ShareButton", @"FavoriteButton", @"CollectButton"]) {
-        if ([className containsString:keyword]) {
-            return YES;
-        }
-    }
-    if ([className isEqualToString:@"AWEFeedVideoButton"]) {
-        return YES;
-    }
-
-    NSString *label = view.accessibilityLabel;
-    if (label.length > 0) {
-        for (NSString *keyword in @[@"点赞", @"评论", @"收藏", @"分享"]) {
-            if ([label containsString:keyword]) {
-                return YES;
-            }
-        }
-    }
-
-    if ([view isKindOfClass:[UILabel class]]) {
-        UILabel *textLabel = (UILabel *)view;
-        NSString *text = textLabel.text ?: textLabel.attributedText.string;
-        text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (text.length > 0 && text.length <= 12) {
-            NSCharacterSet *countCharacters = [NSCharacterSet characterSetWithCharactersInString:@"0123456789.万亿wWkK+"];
-            if ([[text stringByTrimmingCharactersInSet:countCharacters] length] == 0) {
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
-static BOOL DYYYMusicTemplateViewContainsProtected(UIView *view, NSInteger depth) {
-    if (!view || depth > 4) {
-        return NO;
-    }
-    for (UIView *subview in view.subviews) {
-        if (DYYYMusicTemplateViewIsProtected(subview)) {
-            return YES;
-        }
-        if (DYYYMusicTemplateViewContainsProtected(subview, depth + 1)) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-// 从“拍同款/玩同款”文字往上找它自己的按钮，绝不返回点赞/评论所在的整条右侧栏。
-static UIView *DYYYMusicTemplateInteractiveAncestor(UIView *view) {
-    UIView *candidate = [view isKindOfClass:[UIControl class]] ? view : view.superview;
-    for (NSInteger depth = 0; candidate && depth < 5; depth++, candidate = candidate.superview) {
-        if ([candidate isKindOfClass:[UIWindow class]]) {
-            break;
-        }
-        if (![candidate isKindOfClass:[UIControl class]]) {
-            continue;
-        }
-        CGSize size = candidate.bounds.size;
-        if (size.width <= 0.0 || size.height <= 0.0 || size.width > 360.0 || size.height > 140.0) {
-            continue;
-        }
-        if (DYYYMusicTemplateViewIsProtected(candidate)) {
-            continue;
-        }
-        if (DYYYMusicTemplateViewContainsProtected(candidate, 0)) {
-            continue;
-        }
-        return candidate;
-    }
-    return nil;
-}
-
-static void DYYYCollectMusicTemplateViews(UIView *view, NSMutableArray<UIView *> *matches, BOOL allowTextOnly) {
-    if (!view || !matches) {
-        return;
-    }
-
-    NSString *text = nil;
-    if ([view isKindOfClass:[UILabel class]]) {
-        UILabel *label = (UILabel *)view;
-        text = label.text ?: label.attributedText.string;
-    } else if ([view isKindOfClass:[UIButton class]]) {
-        UIButton *button = (UIButton *)view;
-        text = button.currentTitle ?: button.titleLabel.text ?: button.accessibilityLabel;
-    }
-    if (text.length == 0) {
-        text = view.accessibilityLabel;
-    }
-
-    if (DYYYMusicTemplateTextMatches(text)) {
-        UIView *target = DYYYMusicTemplateInteractiveAncestor(view);
-        if (!target && allowTextOnly) {
-            target = view;
-        }
-        if (target && ![matches containsObject:target]) {
-            [matches addObject:target];
-        }
-    }
-
-    for (UIView *subview in view.subviews) {
-        DYYYCollectMusicTemplateViews(subview, matches, allowTextOnly);
-    }
-}
-
-static void DYYYRestoreMusicTemplateViews(NSArray<UIView *> *views) {
-    for (UIView *view in views) {
-        NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseAlphaKey);
-        if (baseAlpha) {
-            view.alpha = baseAlpha.doubleValue;
-            objc_setAssociatedObject(view, &kDYYYMusicTemplateBaseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey);
-        if (baseHidden) {
-            view.hidden = baseHidden.boolValue;
-            objc_setAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-    }
-}
-
-static void DYYYRestoreAllMusicTemplateViews(void) {
-    if (!gDYYYMusicTemplateTrackedViews) {
-        return;
-    }
-    DYYYRestoreMusicTemplateViews(gDYYYMusicTemplateTrackedViews);
-    [gDYYYMusicTemplateTrackedViews removeAllObjects];
-}
-
-static void DYYYApplyMusicTemplateAppearance(UIView *rootView, BOOL allowTextOnly) {
-    if (!rootView) {
-        return;
-    }
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            DYYYApplyMusicTemplateAppearance(rootView, allowTextOnly);
-        });
-        return;
-    }
-
-    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
-    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
-
-    if (!shouldHide && configuredAlpha < 0.0) {
-        DYYYRestoreAllMusicTemplateViews();
-        return;
-    }
-
-    NSMutableArray<UIView *> *targets = [NSMutableArray array];
-    for (UIView *subview in rootView.subviews) {
-        DYYYCollectMusicTemplateViews(subview, targets, allowTextOnly);
-    }
-    if (targets.count == 0) {
-        return;
-    }
-
-    if (!gDYYYMusicTemplateTrackedViews) {
-        gDYYYMusicTemplateTrackedViews = [NSMutableArray array];
-    }
-    NSMutableArray<UIView *> *tracked = gDYYYMusicTemplateTrackedViews;
-    for (UIView *view in [tracked copy]) {
-        if (!view.window) {
-            DYYYRestoreMusicTemplateViews(@[view]);
-            [tracked removeObject:view];
-        }
-    }
-
-    for (UIView *target in targets) {
-        if (![tracked containsObject:target]) {
-            [tracked addObject:target];
-        }
-        NSNumber *baseAlpha = objc_getAssociatedObject(target, &kDYYYMusicTemplateBaseAlphaKey);
-        if (!baseAlpha) {
-            objc_setAssociatedObject(target, &kDYYYMusicTemplateBaseAlphaKey, @(target.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        NSNumber *baseHidden = objc_getAssociatedObject(target, &kDYYYMusicTemplateBaseHiddenKey);
-        if (!baseHidden) {
-            objc_setAssociatedObject(target, &kDYYYMusicTemplateBaseHiddenKey, @(target.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-    }
-
-    for (UIView *view in tracked) {
-        NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey);
-        if (baseHidden) {
-            view.hidden = baseHidden.boolValue;
-        }
-        if (shouldHide) {
-            view.hidden = YES;
-        } else {
-            view.alpha = configuredAlpha;
-        }
-    }
-}
-
-static void DYYYApplyMusicTemplateAppearanceInWindow(UIWindow *window) {
-    if (!window) {
-        return;
-    }
-    Class groupClass = NSClassFromString(@"AWEPlayInteractionTemplateButtonGroup");
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
-    while (stack.count > 0) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        if (groupClass && [view isKindOfClass:groupClass]) {
-            DYYYApplyMusicTemplateAppearance(view, YES);
-        }
-        [stack addObjectsFromArray:view.subviews];
-    }
 }
 
 %hook AWEMusicCoverButton
@@ -6816,13 +6645,11 @@ static void DYYYApplyMusicTemplateAppearanceInWindow(UIWindow *window) {
         return;
     }
     DYYYApplyMusicEntryAppearanceToButton(self);
-    DYYYApplyMusicTemplateAppearance(self.superview, NO);
 }
 
 %new
 - (void)dyyy_musicButtonTransparencyDidChange:(NSNotification *)notification {
     [self dyyy_applyMusicEntryAppearanceIfNeeded];
-    DYYYApplyMusicTemplateAppearanceInWindow(self.window);
 }
 
 - (void)didMoveToWindow {
@@ -6834,7 +6661,6 @@ static void DYYYApplyMusicTemplateAppearanceInWindow(UIWindow *window) {
         [center addObserver:self selector:@selector(dyyy_musicButtonTransparencyDidChange:) name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
         [center addObserver:self selector:@selector(dyyy_musicButtonTransparencyDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
         [self dyyy_applyMusicEntryAppearanceIfNeeded];
-        DYYYApplyMusicTemplateAppearanceInWindow(self.window);
     }
 }
 
@@ -6848,15 +6674,6 @@ static void DYYYApplyMusicTemplateAppearanceInWindow(UIWindow *window) {
 - (void)layoutSubviews {
     %orig;
     [self dyyy_applyMusicEntryAppearanceIfNeeded];
-}
-
-%end
-
-%hook AWEPlayInteractionTemplateButtonGroup
-
-- (void)layoutSubviews {
-    %orig;
-    DYYYApplyMusicTemplateAppearance(self, YES);
 }
 
 %end
