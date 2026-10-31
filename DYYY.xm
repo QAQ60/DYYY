@@ -4730,6 +4730,13 @@ static BOOL isGestureActive = NO;
     // 音符文案复用同一个 label 时，只有文本写入这一拍能拿到信号（定义在音乐条目段）。
     DYYYMusicEntryConsiderTextChange(self);
 }
+
+// 富文本写入不能另开一个 %hook UILabel，同一文件里重复 hook 同一个类
+// 会生成两套 orig 指针，是启动期最容易出事的地方，这里并到同一个块里。
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    %orig(attributedText);
+    DYYYMusicEntryConsiderTextChange(self);
+}
 %end
 
 // 强制启用保存他人头像
@@ -6297,6 +6304,20 @@ static char kDYYYMusicEntryHostKey;
 static BOOL gDYYYMusicEntryGlobalActive = NO;
 static CGFloat gDYYYMusicEntryGlobalAlpha = 1.0;
 
+// 冷启动期间一律不碰 UI 热路径。tweak 在 dyld 阶段就被加载，那时 UIKit 还没有
+// 准备好，didAddSubview / didMoveToWindow 里的任何判断都可能碰到半初始化的对象。
+// 只有 App 真正启动完成后，这个开关才会打开。
+static BOOL gDYYYMusicEntryStarted = NO;
+// 事件驱动一旦自己出问题（抛异常，或调用量失控）就熔断，退回 1 秒巡检，
+// 保证最坏情况下也只是慢一点，不会把 App 拖死。
+static BOOL gDYYYMusicEntryEventBroken = NO;
+static NSUInteger gDYYYMusicEntryEventCount = 0;
+static NSTimeInterval gDYYYMusicEntryEventWindowStart = 0.0;
+// 类名判断是热路径上唯一需要字符串比较的地方，按 Class 缓存结果：
+// 几万个实例只算几百次，避免冷启动和滚动被 NSStringFromClass 拖住。
+static NSMutableSet *gDYYYMusicEntryMusicClasses;
+static NSMutableSet *gDYYYMusicEntryOtherClasses;
+
 static void DYYYMusicEntryRefreshGlobalState(void) {
     BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
     CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
@@ -6314,9 +6335,11 @@ static void DYYYMusicEntryRefreshGlobalState(void) {
 }
 
 static void DYYYMusicEntryInstallGlobalState(void) {
-    DYYYMusicEntryRefreshGlobalState();
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // 先置位再算状态：中间这段不会有别的线程读，主队列串行。
+        gDYYYMusicEntryStarted = YES;
+        DYYYMusicEntryRefreshGlobalState();
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         void (^refreshBlock)(NSNotification *) = ^(NSNotification *note) {
           DYYYMusicEntryRefreshGlobalState();
@@ -6329,6 +6352,23 @@ static void DYYYMusicEntryInstallGlobalState(void) {
                             object:nil
                              queue:[NSOperationQueue mainQueue]
                         usingBlock:refreshBlock];
+    });
+}
+
+// 冷启动时不打开事件驱动：等 App 真正启动完成（或至少两秒）之后再启用。
+// 这样即使某台机器上 UIView 的全局 hook 有问题，也绝不可能卡在启动阶段。
+static void DYYYMusicEntryScheduleStartAfterLaunch(void) {
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserverForName:UIApplicationDidFinishLaunchingNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+      DYYYMusicEntryInstallGlobalState();
+    }];
+    // 兜底：tweak 后加载、或通知已经发过的情况下，主队列排一次延时启动。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      DYYYMusicEntryInstallGlobalState();
     });
 }
 
@@ -7093,14 +7133,37 @@ static void DYYYMusicEntryRegisterButton(UIView *button) {
 // 改成事件驱动：抖音补挂「拍同款」徽标本质是 addSubview，在 didAddSubview /
 // didMoveToWindow 里同步处理，首帧渲染前透明度就已经压好，不会再亮一下。
 static BOOL DYYYMusicEntryClassLooksLikeMusicButton(UIView *view) {
-    NSString *className = NSStringFromClass(view.class);
-    if (className.length == 0) {
+    Class cls = [view class];
+    if (!cls) {
         return NO;
     }
-    if ([className containsString:@"MusicCoverButton"]) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gDYYYMusicEntryMusicClasses = [NSMutableSet set];
+        gDYYYMusicEntryOtherClasses = [NSMutableSet set];
+    });
+    // 类对象几百个封顶，这里一次指针级查表就够了，不再反复拼类名字符串。
+    if ([gDYYYMusicEntryMusicClasses containsObject:cls]) {
         return YES;
     }
-    return [className containsString:@"Music"] && [className containsString:@"Button"];
+    if ([gDYYYMusicEntryOtherClasses containsObject:cls]) {
+        return NO;
+    }
+    NSString *className = NSStringFromClass(cls);
+    BOOL match = NO;
+    if (className.length > 0) {
+        if ([className containsString:@"MusicCoverButton"]) {
+            match = YES;
+        } else {
+            match = [className containsString:@"Music"] && [className containsString:@"Button"];
+        }
+    }
+    if (match) {
+        [gDYYYMusicEntryMusicClasses addObject:cls];
+    } else {
+        [gDYYYMusicEntryOtherClasses addObject:cls];
+    }
+    return match;
 }
 
 static UIView *DYYYMusicEntryNearestButton(UIView *view, CGFloat maxDistance) {
@@ -7152,7 +7215,7 @@ static void DYYYMusicEntryRequestRescan(UIView *button, UIView *candidate) {
 }
 
 static void DYYYMusicEntryConsiderCandidate(UIView *host, UIView *candidate) {
-    if (!gDYYYMusicEntryGlobalActive || !candidate) {
+    if (!gDYYYMusicEntryStarted || !gDYYYMusicEntryGlobalActive || gDYYYMusicEntryEventBroken || !candidate) {
         return;
     }
     // 视图树只在主线程变动，子线程的挂载事件不参与判定，避免读到半成品层级。
@@ -7160,6 +7223,19 @@ static void DYYYMusicEntryConsiderCandidate(UIView *host, UIView *candidate) {
         return;
     }
 
+    // 熔断：一秒内超过两万次说明这条路径已经失控（典型是某个容器在递归 addSubview），
+    // 立刻放弃事件驱动，退回 1 秒巡检。宁可慢一点，也不能把主线程卡死。
+    NSTimeInterval tick = [NSDate timeIntervalSinceReferenceDate];
+    if (tick - gDYYYMusicEntryEventWindowStart > 1.0) {
+        gDYYYMusicEntryEventWindowStart = tick;
+        gDYYYMusicEntryEventCount = 0;
+    }
+    if (++gDYYYMusicEntryEventCount > 20000) {
+        gDYYYMusicEntryEventBroken = YES;
+        return;
+    }
+
+    @try {
     if (DYYYMusicEntryClassLooksLikeMusicButton(candidate)) {
         DYYYMusicEntryRegisterButton(candidate);
         DYYYApplyMusicEntryAppearanceToButton(candidate);
@@ -7219,6 +7295,10 @@ static void DYYYMusicEntryConsiderCandidate(UIView *host, UIView *candidate) {
     if (owner) {
         DYYYMusicEntryRequestRescan(owner, candidate);
     }
+    } @catch (__unused NSException *exception) {
+        // 任何异常都不允许冒回 UIKit，冒出去就是闪退。
+        gDYYYMusicEntryEventBroken = YES;
+    }
 }
 
 // 容器完成布局 = 子视图 frame 全部就绪。这是切视频后的第一拍，
@@ -7247,22 +7327,19 @@ static void DYYYMusicEntryRescanForHost(UIView *host) {
     }
 }
 
-static void DYYYMusicEntryHandleAttachedView(UIView *view) {
-    if (!gDYYYMusicEntryGlobalActive || !view || !view.window) {
-        return;
-    }
-    DYYYMusicEntryConsiderCandidate(view.superview, view);
-}
+// didMoveToWindow 是冷启动期最热的路径（整棵视图树依次入窗），2.2-18 在这里做过
+// 一次挂载判定，收益和 didAddSubview 完全重叠，风险却大得多，因此整条去掉。
 
 // 复用按钮时抖音不会新建视图，只把 label 的文字换掉：歌名→「拍同款」。
 // 这种情况下没有 addSubview、也没有布局变化，只能从文本写入这一拍拿信号。
 static void DYYYMusicEntryConsiderTextChange(UIView *view) {
-    if (!gDYYYMusicEntryGlobalActive || !view) {
+    if (!gDYYYMusicEntryStarted || !gDYYYMusicEntryGlobalActive || gDYYYMusicEntryEventBroken || !view) {
         return;
     }
     if (![NSThread isMainThread]) {
         return;
     }
+    @try {
     UIView *host = view.superview;
     if (!host || !objc_getAssociatedObject(host, &kDYYYMusicEntryHostKey)) {
         return;
@@ -7280,30 +7357,24 @@ static void DYYYMusicEntryConsiderTextChange(UIView *view) {
     objc_setAssociatedObject(owner, &kDYYYMusicEntryStructureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(owner, &kDYYYMusicEntryLastScanTimeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     DYYYApplyMusicEntryAppearanceToButton(owner);
-}
-
-%hook UILabel
-
-// setText: 已在前面的 UILabel hook 里统一处理（同一文件内不能重复定义），
-// 这里只补富文本写入这一条路径。
-- (void)setAttributedText:(NSAttributedString *)attributedText {
-    %orig;
-    if (gDYYYMusicEntryGlobalActive) {
-        DYYYMusicEntryConsiderTextChange(self);
+    } @catch (__unused NSException *exception) {
+        gDYYYMusicEntryEventBroken = YES;
     }
 }
 
-%end
-
 // 抖音的音乐文案常用 YYLabel，走的是自己的文本管线，不经过 UILabel 的 setText:。
+// 这个类不保证每个版本都存在，所以放进独立 group，由 %ctor 判断存在后才 init；
+// 直接 %hook 一个不存在的类会让 MSHookMessageEx 收到 nil，是启动崩溃的典型来源。
+%group DYYYMusicTextGroup
+
 %hook YYLabel
 
 - (void)setText:(NSString *)text {
     %orig;
-    if (gDYYYMusicEntryGlobalActive) {
-        DYYYMusicEntryConsiderTextChange(self);
-    }
+    DYYYMusicEntryConsiderTextChange(self);
 }
+
+%end
 
 %end
 
@@ -12150,11 +12221,6 @@ static Class tabBarButtonClass = nil;
     } else if (!hideButton.isElementsHidden) {
         DYYYRestoreClearTargetViewStateIfNeeded(self);
     }
-
-    // 音乐条目：整棵新树一次性入窗（切视频换页）时，这里就是最早的一拍。
-    if (self.window) {
-        DYYYMusicEntryHandleAttachedView(self);
-    }
 }
 
 - (void)setBackgroundColor:(UIColor *)backgroundColor {
@@ -12207,7 +12273,8 @@ static Class tabBarButtonClass = nil;
     }
 
     // 音乐条目：容器布局完成的那一拍就压好透明度，不等下一次巡检。
-    if (gDYYYMusicEntryGlobalActive &&
+    // 前面几个判断都只是全局布尔读，未启用时开销可忽略。
+    if (gDYYYMusicEntryStarted && gDYYYMusicEntryGlobalActive && !gDYYYMusicEntryEventBroken &&
         objc_getAssociatedObject(self, &kDYYYMusicEntryHostKey)) {
         DYYYMusicEntryRescanForHost(self);
     }
@@ -13838,7 +13905,12 @@ static void findTargetViewInView(UIView *view) {
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
-    DYYYMusicEntryInstallGlobalState();
+    // 音乐条目的事件驱动不在这里启动：%ctor 跑在 dyld 阶段，UIKit 还没准备好，
+    // 挂到全局 UIView 上的判定必须等到 App 启动完成之后再打开。
+    DYYYMusicEntryScheduleStartAfterLaunch();
+    if (objc_getClass("YYLabel")) {
+        %init(DYYYMusicTextGroup);
+    }
 
     Class interactionBaseLabelClass = objc_getClass("AWECommentSwiftBizUI.CommentInteractionBaseLabel");
     if (interactionBaseLabelClass) {
