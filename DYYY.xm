@@ -6424,54 +6424,96 @@ static UIView *DYYYMusicEntryDecorationWrapper(UIView *button) {
     return nil;
 }
 
+// 抖音大量使用 YYLabel / AWEAnimatedLabel 这类自定义文本控件，它们不是 UILabel 子类，
+// 只按 isKindOfClass:UILabel 判断会整片漏掉。
+static NSString *DYYYMusicEntryTextOfView(UIView *view) {
+    if (!view) {
+        return nil;
+    }
+    @try {
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)view;
+            return label.text.length > 0 ? label.text : label.attributedText.string;
+        }
+        if ([view isKindOfClass:[UIButton class]]) {
+            UIButton *button = (UIButton *)view;
+            return button.currentTitle.length > 0 ? button.currentTitle : button.titleLabel.text;
+        }
+        if ([view respondsToSelector:@selector(text)]) {
+            id text = [view valueForKey:@"text"];
+            if ([text isKindOfClass:[NSString class]] && [(NSString *)text length] > 0) {
+                return text;
+            }
+        }
+        if ([view respondsToSelector:@selector(attributedText)]) {
+            id attributed = [view valueForKey:@"attributedText"];
+            if ([attributed isKindOfClass:[NSAttributedString class]]) {
+                return [(NSAttributedString *)attributed string];
+            }
+        }
+    } @catch (NSException *exception) {
+        return nil;
+    }
+    return nil;
+}
+
 static void DYYYMusicEntryCollectTitleLabels(UIView *view, UIView *button, CGRect buttonRect, NSMutableArray<UIView *> *matches, NSInteger depth) {
-    if (!view || depth > 5 || matches.count >= 4) {
+    if (!view || depth > 6 || matches.count >= 6) {
         return;
     }
 
-    if (view != button && [view isKindOfClass:[UILabel class]] && ![matches containsObject:view]) {
-        UILabel *label = (UILabel *)view;
-        NSString *text = label.text.length > 0 ? label.text : label.attributedText.string;
+    if (view != button && ![matches containsObject:view]) {
+        NSString *text = DYYYMusicEntryTextOfView(view);
         text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-        // “拍同款/玩同款”就是音乐图标下方那行字，属于本次要处理的对象，不能当成“其它操作”排除。
+        // “拍同款/玩同款”就是音乐图标旁边那行字，属于本次要处理的对象，不能当成“其它操作”排除。
         BOOL isMusicCaption = [text containsString:@"拍同款"] || [text containsString:@"玩同款"];
-        BOOL foreign = DYYYMusicEntryViewIsForeignAction(label);
+        BOOL foreign = DYYYMusicEntryViewIsForeignAction(view);
         if (isMusicCaption) {
             foreign = NO;
         }
 
-        // 音乐图标下方那句「拍同款」本身就可能挂在 TemplateButton 里，同样不该被祖先判定挡掉。
-        BOOL badAncestor = !isMusicCaption && DYYYMusicEntryHasForeignAncestor(label, 8);
+        // 音乐图标旁边那句「拍同款」本身就可能挂在 TemplateButton 里，同样不该被祖先判定挡掉。
+        BOOL badAncestor = !isMusicCaption && DYYYMusicEntryHasForeignAncestor(view, 8);
 
         if (text.length > 0 && text.length <= 64 &&
             !DYYYMusicEntryTextIsCount(text) &&
             !foreign &&
             !badAncestor) {
 
-            CGRect rect = [label convertRect:label.bounds toView:nil];
+            CGRect rect = [view convertRect:view.bounds toView:nil];
             BOOL reasonableSize = CGRectGetWidth(rect) >= 8.0 && CGRectGetWidth(rect) <= 600.0 &&
-                                  CGRectGetHeight(rect) <= 44.0;
+                                  CGRectGetHeight(rect) <= 48.0;
+
+            CGFloat verticalDistance = fabs(CGRectGetMidY(rect) - CGRectGetMidY(buttonRect));
+            CGFloat horizontalOffset = fabs(CGRectGetMidX(rect) - CGRectGetMidX(buttonRect));
 
             // 情况一：同一横排、位于按钮右侧 —— 歌曲名。
-            CGFloat verticalDistance = fabs(CGRectGetMidY(rect) - CGRectGetMidY(buttonRect));
-            BOOL sameRow = verticalDistance <= MAX(CGRectGetHeight(buttonRect) * 0.6, 12.0);
+            BOOL sameRow = verticalDistance <= MAX(CGRectGetHeight(buttonRect) * 0.8, 16.0);
             BOOL onTheRight = CGRectGetMinX(rect) >= CGRectGetMinX(buttonRect) - 6.0 &&
                                CGRectGetMinX(rect) - CGRectGetMaxX(buttonRect) <= 600.0;
             BOOL rightSideTitle = sameRow && onTheRight;
 
-            // 情况二：正下方 0~48pt —— 音乐图标下面那行「拍同款/玩同款」。
-            // 只对这句固定文案放开，避免把下方的正文、广告、话题一起淡掉。
-            CGFloat horizontalOffset = fabs(CGRectGetMidX(rect) - CGRectGetMidX(buttonRect));
-            BOOL belowButton = CGRectGetMinY(rect) >= CGRectGetMaxY(buttonRect) - 8.0 &&
-                               CGRectGetMinY(rect) - CGRectGetMaxY(buttonRect) <= 48.0;
-            BOOL belowCaption = isMusicCaption &&
-                                belowButton &&
-                                horizontalOffset <= MAX(CGRectGetWidth(buttonRect) * 1.2, 36.0) &&
-                                CGRectGetWidth(rect) <= MAX(CGRectGetWidth(buttonRect) * 3.0, 160.0);
+            // 情况二/三：按钮下方 0~80pt 或上方 0~60pt 的「拍同款/玩同款」。
+            // 只对这句固定文案放开，避免把正文、广告、话题一起淡掉。
+            BOOL belowButton = CGRectGetMinY(rect) >= CGRectGetMaxY(buttonRect) - 10.0 &&
+                               CGRectGetMinY(rect) - CGRectGetMaxY(buttonRect) <= 80.0;
+            BOOL aboveButton = CGRectGetMaxY(rect) <= CGRectGetMinY(buttonRect) + 10.0 &&
+                               CGRectGetMinY(buttonRect) - CGRectGetMaxY(rect) <= 60.0;
+            BOOL captionNear = isMusicCaption &&
+                               (belowButton || aboveButton) &&
+                               horizontalOffset <= MAX(CGRectGetWidth(buttonRect) * 2.0, 100.0) &&
+                               CGRectGetWidth(rect) <= MAX(CGRectGetWidth(buttonRect) * 4.0, 200.0);
 
-            if (reasonableSize && (rightSideTitle || belowCaption)) {
-                [matches addObject:label];
+            // 兜底：不同版本的音乐胶囊布局差别很大，只要文案就是「拍同款/玩同款」，
+            // 且离按钮不超过 160pt，就认为属于音乐区。这三个字在播放页不会重复出现。
+            BOOL captionFallback = isMusicCaption &&
+                                   hypot(CGRectGetMidX(rect) - CGRectGetMidX(buttonRect),
+                                         CGRectGetMidY(rect) - CGRectGetMidY(buttonRect)) <= 160.0 &&
+                                   CGRectGetWidth(rect) <= MAX(CGRectGetWidth(buttonRect) * 4.0, 200.0);
+
+            if (reasonableSize && (rightSideTitle || captionNear || captionFallback)) {
+                [matches addObject:view];
             }
         }
     }
@@ -6484,7 +6526,7 @@ static void DYYYMusicEntryCollectTitleLabels(UIView *view, UIView *button, CGRec
     }
 }
 
-// 歌曲名只在音乐按钮所在的 1~2 层容器里找，且必须是“和按钮同一横排、在按钮右侧”的标签。
+// 文字目标在音乐按钮外部的 1~3 层容器里找：歌曲名在同一横排右侧，「拍同款」在按钮上下方。
 static NSArray<UIView *> *DYYYMusicEntryTitleTargets(UIView *button) {
     NSMutableArray<UIView *> *matches = [NSMutableArray array];
     if (!button) {
@@ -6497,7 +6539,7 @@ static NSArray<UIView *> *DYYYMusicEntryTitleTargets(UIView *button) {
     }
 
     UIView *root = button.superview;
-    for (NSInteger level = 0; root && level < 2; level++, root = root.superview) {
+    for (NSInteger level = 0; root && level < 3; level++, root = root.superview) {
         if ([root isKindOfClass:[UIWindow class]]) {
             break;
         }
@@ -6517,9 +6559,9 @@ static BOOL DYYYMusicEntryViewInRightRail(UIView *view) {
             break;
         }
         NSString *className = NSStringFromClass(candidate.class);
+        // 只认真正的右侧栏元素栈；不要用 InteractionButtonGroup，拍同款按钮组也叫这个名字。
         if ([className containsString:@"ElementStack"] ||
-            [className containsString:@"RightRail"] ||
-            [className containsString:@"InteractionButtonGroup"]) {
+            [className containsString:@"RightRail"]) {
             return YES;
         }
         NSString *accessibilityLabel = candidate.accessibilityLabel;
@@ -6546,7 +6588,7 @@ static NSArray *DYYYMusicEntryTargetsForButton(UIView *button) {
         [targets addObject:primary];
     }
 
-    // 音乐按钮旁边的文字：同一横排右侧的歌曲名，或正下方的「拍同款/玩同款」。
+    // 音乐按钮旁边的文字：同一横排右侧的歌曲名，或上下方的「拍同款/玩同款」。
     for (UIView *label in DYYYMusicEntryTitleTargets(button)) {
         if (label == primary || [targets containsObject:label]) {
             continue;
@@ -6554,7 +6596,10 @@ static NSArray *DYYYMusicEntryTargetsForButton(UIView *button) {
         if (DYYYMusicEntryViewInRightRail(label)) {
             continue;
         }
-        if (DYYYMusicEntrySubtreeHasForeignAction(label, nil)) {
+        NSString *labelText = DYYYMusicEntryTextOfView(label);
+        BOOL isCaption = [labelText containsString:@"拍同款"] || [labelText containsString:@"玩同款"];
+        // 「拍同款」按钮内部本来就有一个同名的文本子视图，别让它把自己顶掉。
+        if (!isCaption && DYYYMusicEntrySubtreeHasForeignAction(label, nil)) {
             continue;
         }
         [targets addObject:label];
