@@ -6283,7 +6283,31 @@ static char kDYYYMusicEntryActionBaseAlphaKey;
 static char kDYYYMusicEntryActionBaseHiddenKey;
 
 static BOOL DYYYMusicEntryTextMatches(NSString *text) {
-    return [text isKindOfClass:[NSString class]] && [text containsString:@"拍同款"];
+    if (![text isKindOfClass:[NSString class]]) {
+        return NO;
+    }
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // 只匹配按钮本身的短文案，避免误伤包含这些词的视频标题。
+    if (trimmed.length == 0 || trimmed.length > 12) {
+        return NO;
+    }
+    // 抖音会同时出现「拍同款」和「玩同款」两种文案，需要全部覆盖。
+    return [trimmed containsString:@"拍同款"] || [trimmed containsString:@"玩同款"];
+}
+
+static UIView *DYYYMusicEntryInteractiveAncestor(UIView *view) {
+    UIView *candidate = view.superview;
+    for (NSInteger depth = 0; candidate && depth < 4; depth++, candidate = candidate.superview) {
+        if (![candidate isKindOfClass:[UIControl class]]) {
+            continue;
+        }
+        // 只接管按钮大小的控件，避免误把整条模板按钮容器一起隐藏。
+        CGSize size = candidate.bounds.size;
+        if (size.width > 0 && size.width <= 320 && size.height > 0 && size.height <= 120) {
+            return candidate;
+        }
+    }
+    return nil;
 }
 
 static void DYYYCollectMusicEntryActionViews(UIView *view, NSMutableArray<UIView *> *matches) {
@@ -6303,10 +6327,13 @@ static void DYYYCollectMusicEntryActionViews(UIView *view, NSMutableArray<UIView
         text = view.accessibilityLabel;
     }
 
-    if (DYYYMusicEntryTextMatches(text) && ![matches containsObject:view]) {
-        [matches addObject:view];
-        if ([view.superview isKindOfClass:[UIButton class]] && ![matches containsObject:view.superview]) {
-            [matches addObject:view.superview];
+    if (DYYYMusicEntryTextMatches(text)) {
+        UIView *interactiveView = DYYYMusicEntryInteractiveAncestor(view);
+        NSArray<UIView *> *viewsToHide = interactiveView ? @[view, interactiveView] : @[view];
+        for (UIView *target in viewsToHide) {
+            if (![matches containsObject:target]) {
+                [matches addObject:target];
+            }
         }
     }
 
