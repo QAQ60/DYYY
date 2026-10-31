@@ -688,8 +688,7 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
             targetVC = targetVC.presentedViewController;
         }
     }
-    BOOL hasAgreed = [DYYYSettingsHelper getUserDefaults:@"DYYYUserAgreementAccepted"];
-    showDYYYSettingsVC(targetVC, hasAgreed);
+    showDYYYSettingsVC(targetVC);
 }
 %end
 
@@ -739,8 +738,7 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
             targetVC = targetVC.presentedViewController;
         }
     }
-    BOOL hasAgreed = [DYYYSettingsHelper getUserDefaults:@"DYYYUserAgreementAccepted"];
-    showDYYYSettingsVC(targetVC, hasAgreed);
+    showDYYYSettingsVC(targetVC);
 }
 %end
 
@@ -781,16 +779,8 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
 #ifdef __cplusplus
 extern "C"
 #endif
-void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
+void showDYYYSettingsVC(UIViewController *rootVC) {
     AWESettingBaseViewController *settingsVC = [[%c(AWESettingBaseViewController) alloc] init];
-    if (!hasAgreed) {
-        [DYYYSettingsHelper showAboutDialog:@"用户协议"
-                                    message:@"本插件为开源项目\n仅供学习交流用途\n如有侵权请联系, GitHub 仓库：huami1314/DYYY\n请遵守当地法律法规, "
-                                            @"逆向工程仅为学习目的\n盗用源码进行商业用途/发布但未标记开源项目必究\n详情请参阅项目内 MIT 许可证\n\n请输入\"我已阅读并同意继续使用\"以继续"
-                                  onConfirm:^{
-                                    [DYYYSettingsHelper showUserAgreementAlert];
-                                  }];
-    }
 
     // 等待视图加载并使用KVO安全访问属性
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -4440,8 +4430,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
         dyyyItem.isEnable = YES;
         dyyyItem.cellTappedBlock = ^{
           UIViewController *rootVC = self.controllerDelegate;
-          BOOL hasAgreed = [DYYYSettingsHelper getUserDefaults:@"DYYYUserAgreementAccepted"];
-          showDYYYSettingsVC(rootVC, hasAgreed);
+          showDYYYSettingsVC(rootVC);
         };
 
         AWESettingSectionModel *newSection = [[%c(AWESettingSectionModel) alloc] init];

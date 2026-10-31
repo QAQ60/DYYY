@@ -743,8 +743,7 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
 }
 
 + (void)openSettingsWithViewController:(UIViewController *)vc {
-    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
-    showDYYYSettingsVC(vc, hasAgreed);
+    showDYYYSettingsVC(vc);
 }
 
 + (void)openSettingsFromView:(UIView *)view {
@@ -759,25 +758,4 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:target action:@selector(openDYYYSettings)];
     [view addGestureRecognizer:tapGesture];
 }
-
-+ (void)showUserAgreementAlert {
-    [self showTextInputAlert:@"用户协议"
-        defaultText:@""
-        placeholder:@"我已阅读并同意继续使用"
-        onConfirm:^(NSString *text) {
-          if ([text isEqualToString:@"我已阅读并同意继续使用"]) {
-              [self setUserDefaults:@"YES" forKey:@"DYYYUserAgreementAccepted"];
-          } else {
-              [DYYYUtils showToast:@"请正确输入内容"];
-              [self showUserAgreementAlert];
-          }
-        }
-        onCancel:^{
-          [DYYYUtils showToast:@"请立即卸载本插件"];
-          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            exit(0);
-          });
-        }];
-}
-
 @end

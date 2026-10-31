@@ -141,11 +141,6 @@
  */
 + (void)addTapGestureToView:(UIView *)view target:(id)target;
 
-/**
- * 显示用户协议输入弹窗
- */
-+ (void)showUserAgreementAlert;
-
 @end
 
-FOUNDATION_EXPORT void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed);
+FOUNDATION_EXPORT void showDYYYSettingsVC(UIViewController *rootVC);

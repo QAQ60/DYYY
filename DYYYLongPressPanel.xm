@@ -1510,9 +1510,7 @@
 %end
 
 %ctor {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"]) {
-        %init;
-    }
+    %init;
 }
 
 %group DYYYFilterSetterGroup

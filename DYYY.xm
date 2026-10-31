@@ -470,10 +470,7 @@ static double DYYYConfiguredPlaybackSpeed(void) {
         return getCurrentSpeed();
     }
 
-    if ([defaults boolForKey:@"DYYYUserAgreementAccepted"]) {
-        return DYYYDefaultPlaybackSpeed();
-    }
-    return 1.0;
+    return DYYYDefaultPlaybackSpeed();
 }
 
 static BOOL DYYYShouldPrepareDefaultPlaybackSpeedForPlayer(id playerViewController) {
@@ -13220,7 +13217,8 @@ static void findTargetViewInView(UIView *view) {
     if (!DYYYGetBool(@"DYYYDisableSettingsGesture")) {
         %init(DYYYSettingsGesture);
     }
-    if (DYYYGetBool(@"DYYYUserAgreementAccepted")) {
+    // 用户协议弹窗已移除，始终初始化以下 Hook 组
+    {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
           Class wSwiftImpl = objc_getClass("AWECommentInputViewSwiftImpl.CommentInputContainerView");
