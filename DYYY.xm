@@ -6281,6 +6281,7 @@ static CGFloat DYYYConfiguredMusicEntryAlpha(void) {
 static char kDYYYMusicEntryActionCacheKey;
 static char kDYYYMusicEntryActionBaseAlphaKey;
 static char kDYYYMusicEntryActionBaseHiddenKey;
+static char kDYYYMusicButtonBaseHiddenKey;
 
 static BOOL DYYYMusicEntryTextMatches(NSString *text) {
     if (![text isKindOfClass:[NSString class]]) {
@@ -6295,6 +6296,28 @@ static BOOL DYYYMusicEntryTextMatches(NSString *text) {
     return [trimmed containsString:@"拍同款"] || [trimmed containsString:@"玩同款"];
 }
 
+static BOOL DYYYMusicEntryViewContainsOtherActions(UIView *view, NSInteger depth) {
+    if (!view || depth > 4) {
+        return NO;
+    }
+
+    NSString *label = view.accessibilityLabel;
+    if ([label isEqualToString:@"点赞"] || [label isEqualToString:@"评论"] ||
+        [label isEqualToString:@"收藏"] || [label isEqualToString:@"分享"]) {
+        return YES;
+    }
+    if ([view isKindOfClass:NSClassFromString(@"AWEFeedVideoButton")]) {
+        return YES;
+    }
+
+    for (UIView *subview in view.subviews) {
+        if (DYYYMusicEntryViewContainsOtherActions(subview, depth + 1)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static UIView *DYYYMusicEntryInteractiveAncestor(UIView *view) {
     UIView *candidate = view.superview;
     for (NSInteger depth = 0; candidate && depth < 4; depth++, candidate = candidate.superview) {
@@ -6303,9 +6326,14 @@ static UIView *DYYYMusicEntryInteractiveAncestor(UIView *view) {
         }
         // 只接管按钮大小的控件，避免误把整条模板按钮容器一起隐藏。
         CGSize size = candidate.bounds.size;
-        if (size.width > 0 && size.width <= 320 && size.height > 0 && size.height <= 120) {
-            return candidate;
+        if (size.width <= 0 || size.width > 320 || size.height <= 0 || size.height > 120) {
+            continue;
         }
+        // 容器里如果还有点赞/评论/收藏/分享，说明它不是「拍同款」自己的按钮。
+        if (DYYYMusicEntryViewContainsOtherActions(candidate, 0)) {
+            continue;
+        }
+        return candidate;
     }
     return nil;
 }
@@ -6478,11 +6506,20 @@ static void DYYYApplyMusicEntryAppearance(UIView *rootView) {
     if ([accessibilityLabel isEqualToString:@"音乐详情"]) {
         if (DYYYGetBool(@"DYYYHideMusicButton")) {
             DYYYApplyMusicEntryAppearance(self.superview);
-            UIView *parent = self.superview;
-            if (parent) {
-                [parent removeFromSuperview];
+            // 只隐藏音乐按钮本身，绝不能移除父容器：
+            // 父容器往往同时装着点赞/评论/收藏/分享按钮。
+            NSNumber *baseHidden = objc_getAssociatedObject(self, &kDYYYMusicButtonBaseHiddenKey);
+            if (!baseHidden) {
+                objc_setAssociatedObject(self, &kDYYYMusicButtonBaseHiddenKey, @(self.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
+            self.hidden = YES;
             return;
+        }
+
+        NSNumber *baseHidden = objc_getAssociatedObject(self, &kDYYYMusicButtonBaseHiddenKey);
+        if (baseHidden) {
+            self.hidden = baseHidden.boolValue;
+            objc_setAssociatedObject(self, &kDYYYMusicButtonBaseHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         [self dyyy_applyMusicButtonTransparency];
         DYYYApplyMusicEntryAppearance(self.superview);
