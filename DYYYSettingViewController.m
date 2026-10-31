@@ -180,6 +180,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"设置顶栏透明" key:@"DYYYTopBarTransparent" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
             [DYYYSettingItem itemWithTitle:@"设置全局透明" key:@"DYYYGlobalTransparency" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
             [DYYYSettingItem itemWithTitle:@"首页头像透明" key:@"DYYYAvatarViewTransparency" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
+            [DYYYSettingItem itemWithTitle:@"音乐图标透明度" key:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY type:DYYYSettingItemTypeTextField placeholder:@"0-1小数，0保留点击"],
             [DYYYSettingItem itemWithTitle:@"右侧栏缩放度" key:@"DYYYElementScale" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
             [DYYYSettingItem itemWithTitle:@"昵称文案缩放" key:@"DYYYNicknameScale" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
             [DYYYSettingItem itemWithTitle:@"昵称下移距离" key:@"DYYYNicknameVerticalOffset" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
@@ -785,6 +786,9 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:textField.tag % 1000 inSection:textField.tag / 1000];
     DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
     [[NSUserDefaults standardUserDefaults] setObject:textField.text forKey:item.key];
+    if ([item.key isEqualToString:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY]) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
+    }
     if ([item.key isEqualToString:@"DYYYSpeedSettings"] || [item.key isEqualToString:@"DYYYSpeedButtonSize"]) {
         [FloatingSpeedButton reloadConfiguration];
     }

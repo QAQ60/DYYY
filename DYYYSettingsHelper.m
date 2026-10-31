@@ -68,6 +68,9 @@
 // 设置用户默认设置
 + (void)setUserDefaults:(id)object forKey:(NSString *)key {
     [[NSUserDefaults standardUserDefaults] setObject:object forKey:key];
+    if ([key isEqualToString:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY]) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
+    }
 }
 
 // 显示自定义关于弹窗

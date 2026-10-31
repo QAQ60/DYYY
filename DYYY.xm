@@ -6247,6 +6247,96 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 
 %hook AWEMusicCoverButton
 
+%new
+- (CGFloat)dyyy_configuredMusicButtonTransparency {
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY];
+    if (!value) {
+        return kInvalidAlpha;
+    }
+
+    double alpha = 0.0;
+    if ([value isKindOfClass:[NSNumber class]]) {
+        alpha = [value doubleValue];
+    } else if ([value isKindOfClass:[NSString class]]) {
+        NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (text.length == 0) {
+            return kInvalidAlpha;
+        }
+        NSScanner *scanner = [NSScanner scannerWithString:text];
+        if (![scanner scanDouble:&alpha] || !scanner.isAtEnd) {
+            return kInvalidAlpha;
+        }
+    } else {
+        return kInvalidAlpha;
+    }
+
+    if (!isfinite(alpha)) {
+        return kInvalidAlpha;
+    }
+
+    // UIKit 在 alpha <= 0.01 时会跳过命中测试，0 用 0.011 表达“不可见但可点击”。
+    if (alpha <= 0.0) {
+        return 0.011;
+    }
+    return MIN(alpha, 1.0);
+}
+
+%new
+- (void)dyyy_applyMusicButtonTransparency {
+    static char baseAlphaKey;
+
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self dyyy_applyMusicButtonTransparency];
+        });
+        return;
+    }
+
+    if (![self.accessibilityLabel isEqualToString:@"音乐详情"]) {
+        return;
+    }
+
+    CGFloat configuredAlpha = [self dyyy_configuredMusicButtonTransparency];
+    NSNumber *baseAlpha = objc_getAssociatedObject(self, &baseAlphaKey);
+
+    if (configuredAlpha < 0.0) {
+        if (baseAlpha) {
+            self.alpha = baseAlpha.doubleValue;
+            objc_setAssociatedObject(self, &baseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    if (!baseAlpha) {
+        baseAlpha = @(self.alpha);
+        objc_setAssociatedObject(self, &baseAlphaKey, baseAlpha, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    if (fabs(self.alpha - configuredAlpha) >= 0.001) {
+        self.alpha = configuredAlpha;
+    }
+}
+
+%new
+- (void)dyyy_musicButtonTransparencyDidChange:(NSNotification *)notification {
+    [self dyyy_applyMusicButtonTransparency];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center removeObserver:self name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
+    if (self.window) {
+        [center addObserver:self selector:@selector(dyyy_musicButtonTransparencyDidChange:) name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
+        [self dyyy_applyMusicButtonTransparency];
+    }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
+    %orig;
+}
+
 - (void)layoutSubviews {
     %orig;
     NSString *accessibilityLabel = self.accessibilityLabel;
@@ -6258,6 +6348,7 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
             }
             return;
         }
+        [self dyyy_applyMusicButtonTransparency];
     }
 }
 

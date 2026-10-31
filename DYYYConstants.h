@@ -30,4 +30,8 @@
 #define DYYY_RESET_SPEED_BUTTON_POSITION_KEY @"DYYYResetSpeedButtonPosition"
 #define DYYY_RESET_CLEAR_BUTTON_POSITION_KEY @"DYYYResetClearButtonPosition"
 
+// 音乐图标透明度（空值表示不覆盖系统行为，0 表示不可见但保留点击）
+#define DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY @"DYYYMusicButtonTransparency"
+#define DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION @"DYYYMusicButtonTransparencyDidChangeNotification"
+
 #endif
