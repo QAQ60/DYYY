@@ -401,8 +401,7 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEMusicCoverButton : UIButton
-- (CGFloat)dyyy_configuredMusicButtonTransparency;
-- (void)dyyy_applyMusicButtonTransparency;
+- (void)dyyy_applyMusicEntryAppearanceIfNeeded;
 - (void)dyyy_musicButtonTransparencyDidChange:(NSNotification *)notification;
 @end
 

@@ -1766,7 +1766,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"imageName" : @"ic_eyeslash_outlined_16"},
           @{@"identifier" : @"DYYYHideMusicButton",
             @"title" : @"隐藏音乐按钮",
-            @"detail" : @"同时隐藏右侧「拍同款/玩同款」文字",
+            @"detail" : @"只隐藏音乐图标本身，不影响点赞/评论等按钮",
             @"cellType" : @6,
             @"imageName" : @"ic_eyeslash_outlined_16"},
           @{
