@@ -6566,6 +6566,235 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
     objc_setAssociatedObject(button, &kDYYYMusicEntryTargetsKey, [targets copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+static NSMutableArray<UIView *> *gDYYYMusicTemplateTrackedViews;
+static char kDYYYMusicTemplateBaseAlphaKey;
+static char kDYYYMusicTemplateBaseHiddenKey;
+
+static BOOL DYYYMusicTemplateTextMatches(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) {
+        return NO;
+    }
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0 || trimmed.length > 12) {
+        return NO;
+    }
+    return [trimmed containsString:@"拍同款"] || [trimmed containsString:@"玩同款"];
+}
+
+static BOOL DYYYMusicTemplateViewIsProtected(UIView *view) {
+    if (!view) {
+        return NO;
+    }
+
+    NSString *className = NSStringFromClass(view.class);
+    for (NSString *keyword in @[@"LikeButton", @"CommentButton", @"ShareButton", @"FavoriteButton", @"CollectButton"]) {
+        if ([className containsString:keyword]) {
+            return YES;
+        }
+    }
+    if ([className isEqualToString:@"AWEFeedVideoButton"]) {
+        return YES;
+    }
+
+    NSString *label = view.accessibilityLabel;
+    if (label.length > 0) {
+        for (NSString *keyword in @[@"点赞", @"评论", @"收藏", @"分享"]) {
+            if ([label containsString:keyword]) {
+                return YES;
+            }
+        }
+    }
+
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *textLabel = (UILabel *)view;
+        NSString *text = textLabel.text ?: textLabel.attributedText.string;
+        text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (text.length > 0 && text.length <= 12) {
+            NSCharacterSet *countCharacters = [NSCharacterSet characterSetWithCharactersInString:@"0123456789.万亿wWkK+"];
+            if ([[text stringByTrimmingCharactersInSet:countCharacters] length] == 0) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+static BOOL DYYYMusicTemplateViewContainsProtected(UIView *view, NSInteger depth) {
+    if (!view || depth > 4) {
+        return NO;
+    }
+    for (UIView *subview in view.subviews) {
+        if (DYYYMusicTemplateViewIsProtected(subview)) {
+            return YES;
+        }
+        if (DYYYMusicTemplateViewContainsProtected(subview, depth + 1)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 从“拍同款/玩同款”文字往上找它自己的按钮，绝不返回点赞/评论所在的整条右侧栏。
+static UIView *DYYYMusicTemplateInteractiveAncestor(UIView *view) {
+    UIView *candidate = [view isKindOfClass:[UIControl class]] ? view : view.superview;
+    for (NSInteger depth = 0; candidate && depth < 5; depth++, candidate = candidate.superview) {
+        if ([candidate isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        if (![candidate isKindOfClass:[UIControl class]]) {
+            continue;
+        }
+        CGSize size = candidate.bounds.size;
+        if (size.width <= 0.0 || size.height <= 0.0 || size.width > 360.0 || size.height > 140.0) {
+            continue;
+        }
+        if (DYYYMusicTemplateViewIsProtected(candidate)) {
+            continue;
+        }
+        if (DYYYMusicTemplateViewContainsProtected(candidate, 0)) {
+            continue;
+        }
+        return candidate;
+    }
+    return nil;
+}
+
+static void DYYYCollectMusicTemplateViews(UIView *view, NSMutableArray<UIView *> *matches, BOOL allowTextOnly) {
+    if (!view || !matches) {
+        return;
+    }
+
+    NSString *text = nil;
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        text = label.text ?: label.attributedText.string;
+    } else if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        text = button.currentTitle ?: button.titleLabel.text ?: button.accessibilityLabel;
+    }
+    if (text.length == 0) {
+        text = view.accessibilityLabel;
+    }
+
+    if (DYYYMusicTemplateTextMatches(text)) {
+        UIView *target = DYYYMusicTemplateInteractiveAncestor(view);
+        if (!target && allowTextOnly) {
+            target = view;
+        }
+        if (target && ![matches containsObject:target]) {
+            [matches addObject:target];
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        DYYYCollectMusicTemplateViews(subview, matches, allowTextOnly);
+    }
+}
+
+static void DYYYRestoreMusicTemplateViews(NSArray<UIView *> *views) {
+    for (UIView *view in views) {
+        NSNumber *baseAlpha = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseAlphaKey);
+        if (baseAlpha) {
+            view.alpha = baseAlpha.doubleValue;
+            objc_setAssociatedObject(view, &kDYYYMusicTemplateBaseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey);
+        if (baseHidden) {
+            view.hidden = baseHidden.boolValue;
+            objc_setAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+static void DYYYRestoreAllMusicTemplateViews(void) {
+    if (!gDYYYMusicTemplateTrackedViews) {
+        return;
+    }
+    DYYYRestoreMusicTemplateViews(gDYYYMusicTemplateTrackedViews);
+    [gDYYYMusicTemplateTrackedViews removeAllObjects];
+}
+
+static void DYYYApplyMusicTemplateAppearance(UIView *rootView, BOOL allowTextOnly) {
+    if (!rootView) {
+        return;
+    }
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            DYYYApplyMusicTemplateAppearance(rootView, allowTextOnly);
+        });
+        return;
+    }
+
+    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
+    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
+
+    if (!shouldHide && configuredAlpha < 0.0) {
+        DYYYRestoreAllMusicTemplateViews();
+        return;
+    }
+
+    NSMutableArray<UIView *> *targets = [NSMutableArray array];
+    for (UIView *subview in rootView.subviews) {
+        DYYYCollectMusicTemplateViews(subview, targets, allowTextOnly);
+    }
+    if (targets.count == 0) {
+        return;
+    }
+
+    if (!gDYYYMusicTemplateTrackedViews) {
+        gDYYYMusicTemplateTrackedViews = [NSMutableArray array];
+    }
+    NSMutableArray<UIView *> *tracked = gDYYYMusicTemplateTrackedViews;
+    for (UIView *view in [tracked copy]) {
+        if (!view.window) {
+            DYYYRestoreMusicTemplateViews(@[view]);
+            [tracked removeObject:view];
+        }
+    }
+
+    for (UIView *target in targets) {
+        if (![tracked containsObject:target]) {
+            [tracked addObject:target];
+        }
+        NSNumber *baseAlpha = objc_getAssociatedObject(target, &kDYYYMusicTemplateBaseAlphaKey);
+        if (!baseAlpha) {
+            objc_setAssociatedObject(target, &kDYYYMusicTemplateBaseAlphaKey, @(target.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        NSNumber *baseHidden = objc_getAssociatedObject(target, &kDYYYMusicTemplateBaseHiddenKey);
+        if (!baseHidden) {
+            objc_setAssociatedObject(target, &kDYYYMusicTemplateBaseHiddenKey, @(target.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+
+    for (UIView *view in tracked) {
+        NSNumber *baseHidden = objc_getAssociatedObject(view, &kDYYYMusicTemplateBaseHiddenKey);
+        if (baseHidden) {
+            view.hidden = baseHidden.boolValue;
+        }
+        if (shouldHide) {
+            view.hidden = YES;
+        } else {
+            view.alpha = configuredAlpha;
+        }
+    }
+}
+
+static void DYYYApplyMusicTemplateAppearanceInWindow(UIWindow *window) {
+    if (!window) {
+        return;
+    }
+    Class groupClass = NSClassFromString(@"AWEPlayInteractionTemplateButtonGroup");
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+    while (stack.count > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (groupClass && [view isKindOfClass:groupClass]) {
+            DYYYApplyMusicTemplateAppearance(view, YES);
+        }
+        [stack addObjectsFromArray:view.subviews];
+    }
+}
+
 %hook AWEMusicCoverButton
 
 %new
@@ -6579,15 +6808,21 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
     if (!self.window) {
         return;
     }
-    if (![self.accessibilityLabel isEqualToString:@"音乐详情"]) {
+    NSString *musicLabel = self.accessibilityLabel;
+    if (musicLabel.length > 0 &&
+        ![musicLabel containsString:@"音乐"] &&
+        ![musicLabel containsString:@"Music"] &&
+        ![musicLabel containsString:@"music"]) {
         return;
     }
     DYYYApplyMusicEntryAppearanceToButton(self);
+    DYYYApplyMusicTemplateAppearance(self.superview, NO);
 }
 
 %new
 - (void)dyyy_musicButtonTransparencyDidChange:(NSNotification *)notification {
     [self dyyy_applyMusicEntryAppearanceIfNeeded];
+    DYYYApplyMusicTemplateAppearanceInWindow(self.window);
 }
 
 - (void)didMoveToWindow {
@@ -6599,6 +6834,7 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
         [center addObserver:self selector:@selector(dyyy_musicButtonTransparencyDidChange:) name:DYYY_MUSIC_BUTTON_TRANSPARENCY_CHANGED_NOTIFICATION object:nil];
         [center addObserver:self selector:@selector(dyyy_musicButtonTransparencyDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
         [self dyyy_applyMusicEntryAppearanceIfNeeded];
+        DYYYApplyMusicTemplateAppearanceInWindow(self.window);
     }
 }
 
@@ -6612,6 +6848,15 @@ static void DYYYApplyMusicEntryAppearanceToButton(UIView *button) {
 - (void)layoutSubviews {
     %orig;
     [self dyyy_applyMusicEntryAppearanceIfNeeded];
+}
+
+%end
+
+%hook AWEPlayInteractionTemplateButtonGroup
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYApplyMusicTemplateAppearance(self, YES);
 }
 
 %end
