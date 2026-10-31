@@ -1436,7 +1436,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"imageName" : @"ic_user_outlined_20"},
           @{@"identifier" : DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY,
             @"title" : @"音乐图标透明度",
-            @"detail" : @"0-1小数，0保留点击",
+            @"detail" : @"0-1小数，0保留点击；同时作用于「拍同款」",
             @"cellType" : @26,
             @"imageName" : @"ic_eye_outlined_20"},
           @{@"identifier" : @"DYYYEnableCommentBlur",
@@ -1766,7 +1766,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"imageName" : @"ic_eyeslash_outlined_16"},
           @{@"identifier" : @"DYYYHideMusicButton",
             @"title" : @"隐藏音乐按钮",
-            @"detail" : @"",
+            @"detail" : @"同时隐藏右侧「拍同款」文字",
             @"cellType" : @6,
             @"imageName" : @"ic_eyeslash_outlined_16"},
           @{

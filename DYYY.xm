@@ -6245,10 +6245,7 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 }
 %end
 
-%hook AWEMusicCoverButton
-
-%new
-- (CGFloat)dyyy_configuredMusicButtonTransparency {
+static CGFloat DYYYConfiguredMusicEntryAlpha(void) {
     id value = [[NSUserDefaults standardUserDefaults] objectForKey:DYYY_MUSIC_BUTTON_TRANSPARENCY_KEY];
     if (!value) {
         return kInvalidAlpha;
@@ -6279,6 +6276,117 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
         return 0.011;
     }
     return MIN(alpha, 1.0);
+}
+
+static char kDYYYMusicEntryActionCacheKey;
+static char kDYYYMusicEntryActionBaseAlphaKey;
+static char kDYYYMusicEntryActionBaseHiddenKey;
+
+static BOOL DYYYMusicEntryTextMatches(NSString *text) {
+    return [text isKindOfClass:[NSString class]] && [text containsString:@"拍同款"];
+}
+
+static void DYYYCollectMusicEntryActionViews(UIView *view, NSMutableArray<UIView *> *matches) {
+    if (!view || !matches) {
+        return;
+    }
+
+    NSString *text = nil;
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        text = label.text ?: label.attributedText.string;
+    } else if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        text = button.currentTitle ?: button.titleLabel.text ?: button.accessibilityLabel;
+    }
+    if (text.length == 0) {
+        text = view.accessibilityLabel;
+    }
+
+    if (DYYYMusicEntryTextMatches(text) && ![matches containsObject:view]) {
+        [matches addObject:view];
+        if ([view.superview isKindOfClass:[UIButton class]] && ![matches containsObject:view.superview]) {
+            [matches addObject:view.superview];
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        DYYYCollectMusicEntryActionViews(subview, matches);
+    }
+}
+
+static void DYYYRestoreMusicEntryActionViews(NSArray<UIView *> *actions) {
+    for (UIView *action in actions) {
+        NSNumber *baseAlpha = objc_getAssociatedObject(action, &kDYYYMusicEntryActionBaseAlphaKey);
+        if (baseAlpha) {
+            action.alpha = baseAlpha.doubleValue;
+            objc_setAssociatedObject(action, &kDYYYMusicEntryActionBaseAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        NSNumber *baseHidden = objc_getAssociatedObject(action, &kDYYYMusicEntryActionBaseHiddenKey);
+        if (baseHidden) {
+            action.hidden = baseHidden.boolValue;
+            objc_setAssociatedObject(action, &kDYYYMusicEntryActionBaseHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+static void DYYYApplyMusicEntryAppearance(UIView *rootView) {
+    if (!rootView) {
+        return;
+    }
+
+    BOOL shouldHide = DYYYGetBool(@"DYYYHideMusicButton");
+    CGFloat configuredAlpha = DYYYConfiguredMusicEntryAlpha();
+
+    NSArray<UIView *> *cachedActions = objc_getAssociatedObject(rootView, &kDYYYMusicEntryActionCacheKey);
+    if (!shouldHide && configuredAlpha < 0.0) {
+        if (cachedActions.count > 0) {
+            DYYYRestoreMusicEntryActionViews(cachedActions);
+            objc_setAssociatedObject(rootView, &kDYYYMusicEntryActionCacheKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    NSMutableArray<UIView *> *actions = [NSMutableArray array];
+    for (UIView *subview in rootView.subviews) {
+        DYYYCollectMusicEntryActionViews(subview, actions);
+    }
+    if (actions.count == 0) {
+        if (cachedActions.count > 0) {
+            DYYYRestoreMusicEntryActionViews(cachedActions);
+            objc_setAssociatedObject(rootView, &kDYYYMusicEntryActionCacheKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    if (cachedActions.count > 0) {
+        DYYYRestoreMusicEntryActionViews(cachedActions);
+    }
+
+    for (UIView *action in actions) {
+        if (!objc_getAssociatedObject(action, &kDYYYMusicEntryActionBaseAlphaKey)) {
+            objc_setAssociatedObject(action, &kDYYYMusicEntryActionBaseAlphaKey, @(action.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!objc_getAssociatedObject(action, &kDYYYMusicEntryActionBaseHiddenKey)) {
+            objc_setAssociatedObject(action, &kDYYYMusicEntryActionBaseHiddenKey, @(action.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        if (shouldHide) {
+            action.hidden = YES;
+        } else {
+            action.alpha = configuredAlpha;
+        }
+    }
+
+    objc_setAssociatedObject(rootView, &kDYYYMusicEntryActionCacheKey, [actions copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%hook AWEMusicCoverButton
+
+%new
+- (CGFloat)dyyy_configuredMusicButtonTransparency {
+    return DYYYConfiguredMusicEntryAlpha();
 }
 
 %new
@@ -6342,6 +6450,7 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
     NSString *accessibilityLabel = self.accessibilityLabel;
     if ([accessibilityLabel isEqualToString:@"音乐详情"]) {
         if (DYYYGetBool(@"DYYYHideMusicButton")) {
+            DYYYApplyMusicEntryAppearance(self.superview);
             UIView *parent = self.superview;
             if (parent) {
                 [parent removeFromSuperview];
@@ -6349,7 +6458,17 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
             return;
         }
         [self dyyy_applyMusicButtonTransparency];
+        DYYYApplyMusicEntryAppearance(self.superview);
     }
+}
+
+%end
+
+%hook AWEPlayInteractionTemplateButtonGroup
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYApplyMusicEntryAppearance(self);
 }
 
 %end
@@ -11400,6 +11519,8 @@ static Class tabBarButtonClass = nil;
 
     // 离屏和复用中的互动层保留原生尺寸，避免回退布局与原生回收布局反复改高。
     if (!self.viewIfLoaded.window) return;
+
+    DYYYApplyMusicEntryAppearance(self.view);
 
     [DYYYFloatingButtonCoordinator registerInteractionController:self];
 
