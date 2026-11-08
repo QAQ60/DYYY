@@ -6287,14 +6287,33 @@ static CGFloat DYYYMusicTransparencyValue(void) {
     return value;
 }
 
-// 封面透明度：只在 didMoveToWindow 应用一次，之后零运行时干预。
-// 不碰 alpha / hidden / userInteractionEnabled，mask 不参与命中测试，0 仍可点击。
-// 修改设置值后重启抖音生效。
+// 音乐信息容器：从碟片按钮向上最多 5 层，选第一个明显比按钮宽的祖先
+// （碟片旁的歌名文字是兄弟视图，只蒙按钮罩不住文字，要蒙到容器层）。
+// 高度限制在半屏以内，避免误伤整页容器。
+static UIView *DYYYMusicCoverContainer(UIView *view) {
+    UIView *target = view;
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+    for (NSInteger up = 0; up < 5; up++) {
+        UIView *parent = target.superview;
+        if (!parent) break;
+        target = parent;
+        if (parent.bounds.size.width > view.bounds.size.width * 1.5 &&
+            parent.bounds.size.height < screenH * 0.5) {
+            break;
+        }
+    }
+    return target;
+}
+
+// 封面透明度：只在 didMoveToWindow 应用一次，蒙到音乐信息容器层（图标+文字一起透明），
+// 之后零运行时干预。不碰 alpha / hidden / userInteractionEnabled，mask 不参与命中测试，
+// 0 仍可点击。修改设置值后重启抖音生效。
 static void DYYYMusicApplyCoverOnce(UIView *view) {
     if (!view || !view.window) return;
 
     CGFloat transparency = DYYYMusicTransparencyValue();
-    CALayer *layer = view.layer;
+    UIView *target = DYYYMusicCoverContainer(view);
+    CALayer *layer = target.layer;
 
     if (transparency >= 0.999) {
         layer.mask = nil;
@@ -6307,7 +6326,7 @@ static void DYYYMusicApplyCoverOnce(UIView *view) {
         mask.backgroundColor = [UIColor blackColor].CGColor;
         objc_setAssociatedObject(view, &kDYYYMusicMaskLayerKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    mask.frame = view.bounds;
+    mask.frame = target.bounds;
     mask.opacity = (float)transparency;
     layer.mask = mask;
 }
