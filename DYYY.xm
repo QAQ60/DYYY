@@ -6363,9 +6363,24 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
 
         const char *name = object_getClassName(node);
         NSString *label = node.accessibilityLabel;
-        if ((name && (strstr(name, "Template") || strstr(name, "AnchorView") ||
-                      strstr(name, "SameShoot") || strstr(name, "SameUgc"))) ||
-            (label && ([label containsString:@"拍同款"] || [label containsString:@"玩同款"]))) {
+        BOOL hit = (name && (strstr(name, "Template") || strstr(name, "AnchorView") ||
+                             strstr(name, "SameShoot") || strstr(name, "SameUgc"))) ||
+                   (label && ([label containsString:@"拍同款"] || [label containsString:@"玩同款"]));
+        if (!hit) {
+            // 「拍同款」可能只是个 UILabel 文字，藏它的父级（按钮容器）。
+            UILabel *text = nil;
+            if ([node isKindOfClass:[UILabel class]]) {
+                text = (UILabel *)node;
+            } else if ([node isKindOfClass:[UIButton class]]) {
+                text = ((UIButton *)node).titleLabel;
+            }
+            NSString *t = text.text;
+            hit = t && ([t containsString:@"拍同款"] || [t containsString:@"玩同款"]);
+            if (hit) {
+                node = node.superview ?: node;
+            }
+        }
+        if (hit) {
             node.hidden = YES;
             continue;
         }
@@ -6375,13 +6390,22 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
     }
 }
 
+// 拍同款可能晚于封面按钮创建：立即搜一次，0.8s / 2s 后各补搜一次（均为一次性，无循环）。
+static void DYYYMusicScheduleSameShoot(UIView *view) {
+    DYYYMusicApplySameShootOnce(view);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ DYYYMusicApplySameShootOnce(view); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ DYYYMusicApplySameShootOnce(view); });
+}
+
 %hook AWEMusicCoverButton
 
 - (void)didMoveToWindow {
     %orig;
     // 透明度 / 拍同款在这里一次性应用，无观察者、无布局周期参与。
     DYYYMusicApplyCoverOnce(self);
-    DYYYMusicApplySameShootOnce(self);
+    DYYYMusicScheduleSameShoot(self);
 }
 
 %end
@@ -6415,7 +6439,7 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
 - (void)didMoveToWindow {
     %orig;
     if (DYYYGetBool(@"DYYYHideMusicButton")) {
-        DYYYMusicApplySameShootOnce(self);
+        DYYYMusicScheduleSameShoot(self);
     }
 }
 %end
