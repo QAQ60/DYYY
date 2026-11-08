@@ -6245,59 +6245,63 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 }
 %end
 
-// 音乐信息透明度：作用对象是整个音乐元素容器（AWEBaseElementView，含封面、歌名、
-// 拍同款/玩同款），而不是单个封面按钮。用 layer.opacity 控制绘制，
-// view.alpha 始终保持 1，因此 0 透明度下命中测试、手势、点击全部正常。
-// 关键：只赋值属性，不新增/替换图层蒙版，避免在 layoutSubviews 内引发递归布局。
+// 音乐元素透明度
+//
+// 作用对象是 AWEPlayInteractionMusicInfoElement —— 抖音把封面、歌名、
+// 「拍同款 / 玩同款」整块音乐信息都放在这个元素里，所以只有整体调透明度
+// 才能把它们一起隐藏。该类名来自 AwemeX.dylib 的字符串解密结果，不是猜测。
+//
+// 实现约束（上一版卡死的教训）：
+//   1. 不碰 layer.mask —— 换 mask 会触发重新布局，在 layoutSubviews 内形成递归；
+//   2. 不调 CATransaction begin/commit —— layoutSubviews 正处于 CA 提交过程中，
+//      强制 commit 会造成重入，表现为「卡死、滑不动」；
+//   3. layoutSubviews 里不做任何透明度工作，只在视图进入窗口时应用一次；
+//   4. 只改 layer.opacity，view.alpha 恒为 1，因此 0 透明度下命中测试与点击照常。
 static NSString *const kDYYYMusicCoverTransparencyKey = @"DYYYMusicCoverTransparency";
 static char kDYYYMusicAppliedOpacityKey;
-static NSString *gDYYYMusicCoverTransparencyRawValue = nil;
-static CGFloat gDYYYMusicCoverTransparency = 1.0;
-static NSHashTable<UIView *> *gDYYYMusicCoverTrackedViews = nil;
-static dispatch_once_t gDYYYMusicCoverTrackerOnce = 0;
+static NSString *gDYYYMusicOpacityRaw = nil;
+static CGFloat gDYYYMusicOpacityValue = 1.0;
+static NSHashTable<UIView *> *gDYYYMusicTrackedViews = nil;
+static dispatch_once_t gDYYYMusicTrackerOnce = 0;
 
-static CGFloat DYYYMusicCoverTransparencyValue(void) {
-    NSString *rawValue = DYYYGetString(kDYYYMusicCoverTransparencyKey);
-    if (rawValue == gDYYYMusicCoverTransparencyRawValue || [rawValue isEqualToString:gDYYYMusicCoverTransparencyRawValue]) {
-        return gDYYYMusicCoverTransparency;
+static CGFloat DYYYMusicTransparencyValue(void) {
+    NSString *raw = DYYYGetString(kDYYYMusicCoverTransparencyKey);
+    if (raw == gDYYYMusicOpacityRaw || [raw isEqualToString:gDYYYMusicOpacityRaw]) {
+        return gDYYYMusicOpacityValue;
     }
 
-    CGFloat transparency = 1.0;
-    if (rawValue.length > 0) {
-        float parsedValue = 0;
-        NSScanner *scanner = [NSScanner scannerWithString:rawValue];
-        if ([scanner scanFloat:&parsedValue] && scanner.isAtEnd && isfinite(parsedValue)) {
-            transparency = MIN(MAX(parsedValue, 0.0f), 1.0f);
+    CGFloat value = 1.0;
+    if (raw.length > 0) {
+        float parsed = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:raw];
+        if ([scanner scanFloat:&parsed] && scanner.isAtEnd && isfinite(parsed)) {
+            value = MIN(MAX(parsed, 0.0f), 1.0f);
         }
     }
 
-    gDYYYMusicCoverTransparencyRawValue = [rawValue copy];
-    gDYYYMusicCoverTransparency = transparency;
-    return transparency;
+    gDYYYMusicOpacityRaw = [raw copy];
+    gDYYYMusicOpacityValue = value;
+    return value;
 }
 
-static BOOL DYYYViewClassIs(UIView *view, const char *className) {
-    if (!view || !className) return NO;
-    const char *actual = object_getClassName(view);
-    return actual && strcmp(actual, className) == 0;
-}
-
-// 音乐元素容器：封面按钮 -> AWEPlayInteractionMusicView -> AWEBaseElementView。
-// 拍同款/玩同款与封面同属这个容器，只有整块透明才算真正隐藏。
+// 音乐信息容器：优先精确命中 AWEAwemeMusicInfoView（头文件里确证的音乐信息视图，
+// 封面、歌名、「拍同款 / 玩同款」都在它里面），其次退到名字含 MusicInfo 的祖先。
 static UIView *DYYYMusicElementContainer(UIView *view) {
     UIView *fallback = nil;
     UIView *candidate = view;
-    for (NSInteger depth = 0; depth < 6 && candidate; depth++) {
+    for (NSInteger depth = 0; depth < 8 && candidate; depth++) {
+        const char *name = object_getClassName(candidate);
+        if (name) {
+            if (strcmp(name, "AWEAwemeMusicInfoView") == 0) {
+                return candidate;
+            }
+            if (!fallback && strstr(name, "MusicInfo")) {
+                fallback = candidate;
+            }
+        }
         candidate = candidate.superview;
-        if (!candidate) break;
-        if (DYYYViewClassIs(candidate, "AWEBaseElementView")) {
-            return candidate;
-        }
-        if (!fallback && DYYYViewClassIs(candidate, "AWEPlayInteractionMusicView")) {
-            fallback = candidate;
-        }
     }
-    return fallback;
+    return fallback ?: view;
 }
 
 static void DYYYSetMusicOpacity(UIView *view, CGFloat opacity) {
@@ -6308,54 +6312,47 @@ static void DYYYSetMusicOpacity(UIView *view, CGFloat opacity) {
         return;
     }
 
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
+    // 直接赋值，不包 CATransaction：layoutSubviews 期间包事务会重入 CA 提交。
     view.layer.opacity = (float)opacity;
-    [CATransaction commit];
     objc_setAssociatedObject(view, &kDYYYMusicAppliedOpacityKey, @(opacity), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void DYYYApplyMusicCoverTransparency(UIView *coverView) {
-    if (!coverView) return;
-
-    CGFloat transparency = DYYYMusicCoverTransparencyValue();
-    UIView *target = DYYYMusicElementContainer(coverView);
-    if (!target) {
-        target = coverView;
-    } else if (objc_getAssociatedObject(coverView, &kDYYYMusicAppliedOpacityKey)) {
-        // 早期版本直接改过封面按钮，恢复它，避免与容器透明度叠加。
-        DYYYSetMusicOpacity(coverView, 1.0);
-    }
-    DYYYSetMusicOpacity(target, transparency);
-}
-
-static void DYYYTrackMusicCoverView(UIView *coverView) {
-    dispatch_once(&gDYYYMusicCoverTrackerOnce, ^{
-      gDYYYMusicCoverTrackedViews = [NSHashTable weakObjectsHashTable];
+static void DYYYStartMusicOpacityObserver(void) {
+    dispatch_once(&gDYYYMusicTrackerOnce, ^{
+      gDYYYMusicTrackedViews = [NSHashTable weakObjectsHashTable];
       [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
                                                         object:nil
                                                          queue:[NSOperationQueue mainQueue]
                                                     usingBlock:^(__unused NSNotification *notification) {
-                                                      CGFloat transparency = DYYYMusicCoverTransparencyValue();
-                                                      for (UIView *trackedView in gDYYYMusicCoverTrackedViews.allObjects) {
-                                                          DYYYSetMusicOpacity(trackedView, transparency);
+                                                      CGFloat value = DYYYMusicTransparencyValue();
+                                                      for (UIView *tracked in gDYYYMusicTrackedViews.allObjects) {
+                                                          DYYYSetMusicOpacity(tracked, value);
                                                       }
                                                     }];
     });
+}
 
-    UIView *target = DYYYMusicElementContainer(coverView);
-    if (!target) {
-        target = coverView;
+// 只登记目标视图并应用一次；后续变化全部交给通知回调，避免每帧重复计算。
+static void DYYYTrackMusicElement(UIView *view) {
+    if (!view) return;
+
+    DYYYStartMusicOpacityObserver();
+
+    UIView *target = DYYYMusicElementContainer(view);
+    if (!target) return;
+
+    if (![gDYYYMusicTrackedViews containsObject:target]) {
+        [gDYYYMusicTrackedViews addObject:target];
     }
-    if (![gDYYYMusicCoverTrackedViews containsObject:target]) {
-        [gDYYYMusicCoverTrackedViews addObject:target];
-    }
+    DYYYSetMusicOpacity(target, DYYYMusicTransparencyValue());
 }
 
 %hook AWEMusicCoverButton
 
 - (void)layoutSubviews {
     %orig;
+
+    // 这里只保留原有的「隐藏音乐按钮」逻辑，绝不做透明度处理。
     NSString *accessibilityLabel = self.accessibilityLabel;
     if ([accessibilityLabel isEqualToString:@"音乐详情"]) {
         if (DYYYGetBool(@"DYYYHideMusicButton")) {
@@ -6366,15 +6363,27 @@ static void DYYYTrackMusicCoverView(UIView *coverView) {
             return;
         }
     }
-
-    DYYYTrackMusicCoverView(self);
-    DYYYApplyMusicCoverTransparency(self);
 }
 
 - (void)didMoveToWindow {
     %orig;
-    DYYYTrackMusicCoverView(self);
-    DYYYApplyMusicCoverTransparency(self);
+    if (DYYYGetBool(@"DYYYHideMusicButton")) {
+        return;
+    }
+    DYYYTrackMusicElement(self);
+}
+
+%end
+
+// 元素级兜底：音乐信息元素初始化时直接登记自身。
+// 抖音在复用播放页时不一定让子视图重新进入窗口，但元素初始化一定会走。
+%hook AWEPlayInteractionMusicInfoElement
+
+- (void)initializeElement:(id)element withParamDic:(id)params {
+    %orig;
+    if ([self isKindOfClass:[UIView class]]) {
+        DYYYTrackMusicElement((UIView *)self);
+    }
 }
 
 %end
