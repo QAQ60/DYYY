@@ -6245,12 +6245,12 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 }
 %end
 
-// 音乐按钮透明度：用图层蒙版只隐藏绘制内容，按钮自身的 alpha 保持 1，
-// 因此透明度为 0 时依然可以命中点击区域，音乐详情功能不受影响。
+// 音乐信息透明度：作用对象是整个音乐元素容器（AWEBaseElementView，含封面、歌名、
+// 拍同款/玩同款），而不是单个封面按钮。用 layer.opacity 控制绘制，
+// view.alpha 始终保持 1，因此 0 透明度下命中测试、手势、点击全部正常。
+// 关键：只赋值属性，不新增/替换图层蒙版，避免在 layoutSubviews 内引发递归布局。
 static NSString *const kDYYYMusicCoverTransparencyKey = @"DYYYMusicCoverTransparency";
-static char kDYYYMusicCoverMaskLayerKey;
-static char kDYYYMusicCoverExternalMaskKey;
-static char kDYYYMusicCoverExternalMaskOpacityKey;
+static char kDYYYMusicAppliedOpacityKey;
 static NSString *gDYYYMusicCoverTransparencyRawValue = nil;
 static CGFloat gDYYYMusicCoverTransparency = 1.0;
 static NSHashTable<UIView *> *gDYYYMusicCoverTrackedViews = nil;
@@ -6276,50 +6276,57 @@ static CGFloat DYYYMusicCoverTransparencyValue(void) {
     return transparency;
 }
 
-static void DYYYApplyMusicCoverTransparency(UIView *coverView) {
-    if (!coverView) return;
+static BOOL DYYYViewClassIs(UIView *view, const char *className) {
+    if (!view || !className) return NO;
+    const char *actual = object_getClassName(view);
+    return actual && strcmp(actual, className) == 0;
+}
 
-    CGFloat transparency = DYYYMusicCoverTransparencyValue();
-    CALayer *maskLayer = objc_getAssociatedObject(coverView, &kDYYYMusicCoverMaskLayerKey);
-    CALayer *externalMask = objc_getAssociatedObject(coverView, &kDYYYMusicCoverExternalMaskKey);
-
-    // 原生已带蒙版（例如圆形裁剪）时直接调制其不透明度，避免破坏原有形状。
-    if (!maskLayer && !externalMask && coverView.layer.mask) {
-        externalMask = coverView.layer.mask;
-        objc_setAssociatedObject(coverView, &kDYYYMusicCoverExternalMaskKey, externalMask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(coverView, &kDYYYMusicCoverExternalMaskOpacityKey, @(externalMask.opacity), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (externalMask) {
-        NSNumber *baseOpacity = objc_getAssociatedObject(coverView, &kDYYYMusicCoverExternalMaskOpacityKey);
-        externalMask.opacity = (baseOpacity ? baseOpacity.floatValue : 1.0) * transparency;
-        return;
-    }
-
-    // 未设置或恢复为 1 时移除蒙版，避免影响原生渲染。
-    if (transparency >= 0.999) {
-        if (maskLayer) {
-            if (coverView.layer.mask == maskLayer) {
-                coverView.layer.mask = nil;
-            }
-            objc_setAssociatedObject(coverView, &kDYYYMusicCoverMaskLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+// 音乐元素容器：封面按钮 -> AWEPlayInteractionMusicView -> AWEBaseElementView。
+// 拍同款/玩同款与封面同属这个容器，只有整块透明才算真正隐藏。
+static UIView *DYYYMusicElementContainer(UIView *view) {
+    UIView *fallback = nil;
+    UIView *candidate = view;
+    for (NSInteger depth = 0; depth < 6 && candidate; depth++) {
+        candidate = candidate.superview;
+        if (!candidate) break;
+        if (DYYYViewClassIs(candidate, "AWEBaseElementView")) {
+            return candidate;
         }
-        return;
+        if (!fallback && DYYYViewClassIs(candidate, "AWEPlayInteractionMusicView")) {
+            fallback = candidate;
+        }
     }
+    return fallback;
+}
 
-    if (!maskLayer) {
-        maskLayer = [CALayer layer];
-        maskLayer.backgroundColor = [UIColor whiteColor].CGColor;
-        objc_setAssociatedObject(coverView, &kDYYYMusicCoverMaskLayerKey, maskLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (coverView.layer.mask != maskLayer) {
-        coverView.layer.mask = maskLayer;
+static void DYYYSetMusicOpacity(UIView *view, CGFloat opacity) {
+    if (!view) return;
+
+    NSNumber *applied = objc_getAssociatedObject(view, &kDYYYMusicAppliedOpacityKey);
+    if (applied && fabs(applied.doubleValue - opacity) < 0.0005) {
+        return;
     }
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    maskLayer.frame = coverView.bounds;
-    maskLayer.opacity = (float)transparency;
+    view.layer.opacity = (float)opacity;
     [CATransaction commit];
+    objc_setAssociatedObject(view, &kDYYYMusicAppliedOpacityKey, @(opacity), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void DYYYApplyMusicCoverTransparency(UIView *coverView) {
+    if (!coverView) return;
+
+    CGFloat transparency = DYYYMusicCoverTransparencyValue();
+    UIView *target = DYYYMusicElementContainer(coverView);
+    if (!target) {
+        target = coverView;
+    } else if (objc_getAssociatedObject(coverView, &kDYYYMusicAppliedOpacityKey)) {
+        // 早期版本直接改过封面按钮，恢复它，避免与容器透明度叠加。
+        DYYYSetMusicOpacity(coverView, 1.0);
+    }
+    DYYYSetMusicOpacity(target, transparency);
 }
 
 static void DYYYTrackMusicCoverView(UIView *coverView) {
@@ -6329,13 +6336,19 @@ static void DYYYTrackMusicCoverView(UIView *coverView) {
                                                         object:nil
                                                          queue:[NSOperationQueue mainQueue]
                                                     usingBlock:^(__unused NSNotification *notification) {
+                                                      CGFloat transparency = DYYYMusicCoverTransparencyValue();
                                                       for (UIView *trackedView in gDYYYMusicCoverTrackedViews.allObjects) {
-                                                          DYYYApplyMusicCoverTransparency(trackedView);
+                                                          DYYYSetMusicOpacity(trackedView, transparency);
                                                       }
                                                     }];
     });
-    if (![gDYYYMusicCoverTrackedViews containsObject:coverView]) {
-        [gDYYYMusicCoverTrackedViews addObject:coverView];
+
+    UIView *target = DYYYMusicElementContainer(coverView);
+    if (!target) {
+        target = coverView;
+    }
+    if (![gDYYYMusicCoverTrackedViews containsObject:target]) {
+        [gDYYYMusicCoverTrackedViews addObject:target];
     }
 }
 
