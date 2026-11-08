@@ -1421,7 +1421,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       NSArray *transparencySettings = @[
           @{@"identifier" : @"DYYYTopBarTransparent",
             @"title" : @"设置顶栏透明",
-            @"detail" : @"0-1小数",
+            @"detail" : @"0-1小数 重启生效",
             @"cellType" : @26,
             @"imageName" : @"ic_module_outlined_20"},
           @{@"identifier" : @"DYYYGlobalTransparency",

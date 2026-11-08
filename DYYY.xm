@@ -6265,29 +6265,15 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 
 static NSString *const kDYYYMusicCoverTransparencyKey = @"DYYYMusicCoverTransparency";
 static char kDYYYMusicMaskLayerKey;
-static char kDYYYMusicHiddenByMeKey;
-static char kDYYYMusicRemountKey;
-static char kDYYYMusicGiveUpKey;
 
-static NSString *gDYYYMusicOpacityRaw = nil;
-static CGFloat gDYYYMusicOpacityValue = 1.0;
-
-static NSMutableSet *gDYYYMusicQueue = nil;
-static dispatch_once_t gDYYYMusicQueueOnce = 0;
-
-static NSHashTable *gDYYYMusicTracked = nil;
-static dispatch_once_t gDYYYMusicTrackedOnce = 0;
-
-static NSInteger gDYYYMusicBurst = 0;
-static NSTimeInterval gDYYYMusicBurstWindow = 0;
-static BOOL gDYYYMusicCircuitOpen = NO;
-
+// 解析 0-1 透明度配置（带缓存）。
 static CGFloat DYYYMusicTransparencyValue(void) {
+    static NSString *cachedRaw = nil;
+    static CGFloat cachedValue = 1.0;
     NSString *raw = DYYYGetString(kDYYYMusicCoverTransparencyKey);
-    if (raw == gDYYYMusicOpacityRaw || [raw isEqualToString:gDYYYMusicOpacityRaw]) {
-        return gDYYYMusicOpacityValue;
+    if (raw == cachedRaw || [raw isEqualToString:cachedRaw]) {
+        return cachedValue;
     }
-
     CGFloat value = 1.0;
     if (raw.length > 0) {
         float parsed = 0;
@@ -6296,108 +6282,49 @@ static CGFloat DYYYMusicTransparencyValue(void) {
             value = MIN(MAX(parsed, 0.0f), 1.0f);
         }
     }
-
-    gDYYYMusicOpacityRaw = [raw copy];
-    gDYYYMusicOpacityValue = value;
+    cachedRaw = [raw copy];
+    cachedValue = value;
     return value;
 }
 
-static BOOL DYYYMusicCircuitAllows(void) {
-    if (gDYYYMusicCircuitOpen) {
-        return NO;
-    }
-    NSTimeInterval now = CACurrentMediaTime();
-    if (now - gDYYYMusicBurstWindow > 1.0) {
-        gDYYYMusicBurstWindow = now;
-        gDYYYMusicBurst = 0;
-    }
-    gDYYYMusicBurst += 1;
-    if (gDYYYMusicBurst > 800) {
-        gDYYYMusicCircuitOpen = YES;
-        return NO;
-    }
-    return YES;
-}
-
-// 隐藏 / 恢复：只碰 hidden，幂等，只恢复自己隐藏过的视图。
-static void DYYYMusicApplyHidden(UIView *view) {
-    if (!view) return;
-
-    if (DYYYGetBool(@"DYYYHideMusicButton")) {
-        if (!view.hidden) {
-            view.hidden = YES;
-            objc_setAssociatedObject(view, &kDYYYMusicHiddenByMeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
-
-    if (objc_getAssociatedObject(view, &kDYYYMusicHiddenByMeKey)) {
-        view.hidden = NO;
-        objc_setAssociatedObject(view, &kDYYYMusicHiddenByMeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
-// 封面按钮透明度：只挂蒙版，不碰 alpha / hidden / userInteractionEnabled，命中测试正常。
-static void DYYYMusicApplyCover(UIView *view) {
+// 封面透明度：只在 didMoveToWindow 应用一次，之后零运行时干预。
+// 不碰 alpha / hidden / userInteractionEnabled，mask 不参与命中测试，0 仍可点击。
+// 修改设置值后重启抖音生效。
+static void DYYYMusicApplyCoverOnce(UIView *view) {
     if (!view || !view.window) return;
-    // 每个视图的 mask 重挂次数超过 3 次就永久放弃：说明抖音在布局时反复清掉 mask，
-    // 继续重挂会形成「挂 mask → 触发布局 → 被清 → 再挂」的布局循环（卡死根因）。
-    if (objc_getAssociatedObject(view, &kDYYYMusicGiveUpKey)) return;
 
     CGFloat transparency = DYYYMusicTransparencyValue();
     CALayer *layer = view.layer;
-    CALayer *mask = objc_getAssociatedObject(view, &kDYYYMusicMaskLayerKey);
 
     if (transparency >= 0.999) {
-        if (mask) {
-            if (layer.mask == mask) {
-                layer.mask = nil;
-            }
-            objc_setAssociatedObject(view, &kDYYYMusicMaskLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
+        layer.mask = nil;
         return;
     }
 
-    if (mask && layer.mask != mask) {
-        NSInteger remounts = [objc_getAssociatedObject(view, &kDYYYMusicRemountKey) integerValue];
-        remounts += 1;
-        objc_setAssociatedObject(view, &kDYYYMusicRemountKey, @(remounts), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (remounts > 3) {
-            objc_setAssociatedObject(view, &kDYYYMusicGiveUpKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(view, &kDYYYMusicMaskLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return;
-        }
-    }
-
+    CALayer *mask = objc_getAssociatedObject(view, &kDYYYMusicMaskLayerKey);
     if (!mask) {
         mask = [CALayer layer];
         mask.backgroundColor = [UIColor blackColor].CGColor;
         objc_setAssociatedObject(view, &kDYYYMusicMaskLayerKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (!CGRectEqualToRect(mask.frame, view.bounds)) {
-        mask.frame = view.bounds;
-    }
+    mask.frame = view.bounds;
     mask.opacity = (float)transparency;
-    if (layer.mask != mask) {
-        layer.mask = mask;
-    }
+    layer.mask = mask;
 }
 
-// AwemeX 逆向（注册序列 a18b20 → addSubViews hook）确证：右下角「拍同款」是
-// 类名含 TemplateAnchorView 的锚点视图，与音乐信息元素相邻注册。
-// 隐藏方式与 AwemeX 行为契约一致：整只视图 hidden，不碰层级，幂等可恢复。
-static void DYYYMusicApplySameShoot(UIView *view) {
+// 拍同款（AwemeX 逆向 a18b20 → TemplateAnchorView）：封面按钮挂窗时一次性浅搜，
+// 整只 hidden，不碰层级。每个按钮生命周期只执行一次。
+static void DYYYMusicApplySameShootOnce(UIView *view) {
     if (!view || !view.window) return;
     if (!DYYYGetBool(@"DYYYHideMusicButton")) return;
 
-    // 从封面按钮向上找到播放页根容器，再限量深搜拍同款锚点。
     UIView *root = view;
     for (NSInteger up = 0; up < 12 && root.superview; up++) {
         root = root.superview;
     }
 
-    NSInteger budget = 300;
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger budget = 240;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
     while (stack.count > 0 && budget > 0) {
         UIView *node = stack.lastObject;
         [stack removeLastObject];
@@ -6405,7 +6332,7 @@ static void DYYYMusicApplySameShoot(UIView *view) {
 
         const char *name = object_getClassName(node);
         if (name && (strstr(name, "Template") || strstr(name, "AnchorView"))) {
-            DYYYMusicApplyHidden(node);
+            node.hidden = YES;
             continue;
         }
         for (UIView *child in node.subviews) {
@@ -6414,100 +6341,19 @@ static void DYYYMusicApplySameShoot(UIView *view) {
     }
 }
 
-typedef NS_ENUM(NSInteger, DYYYMusicJob) {
-    DYYYMusicJobCover = 0,
-    DYYYMusicJobHidden = 1,
-};
-
-// 唯一入口：功能没开直接返回（零开销）；否则去重入队，主队列异步执行。
-static void DYYYMusicEnqueue(UIView *view, DYYYMusicJob job) {
-    if (!view) return;
-
-    if (!DYYYMusicCircuitAllows()) return;
-
-    dispatch_once(&gDYYYMusicQueueOnce, ^{
-      gDYYYMusicQueue = [NSMutableSet set];
-    });
-    dispatch_once(&gDYYYMusicTrackedOnce, ^{
-      gDYYYMusicTracked = [NSHashTable weakObjectsHashTable];
-    });
-
-    if (job == DYYYMusicJobCover) {
-        if (DYYYGetBool(@"DYYYHideMusicButton")) return;  // 隐藏走原生 element 路径
-        if (DYYYMusicTransparencyValue() >= 0.999) return;
-        @synchronized (gDYYYMusicTracked) {
-            if (![gDYYYMusicTracked containsObject:view]) {
-                [gDYYYMusicTracked addObject:view];
-            }
-        }
-    } else {
-        if (!DYYYGetBool(@"DYYYHideMusicButton")) {
-            if (!objc_getAssociatedObject(view, &kDYYYMusicHiddenByMeKey)) return;  // 没隐藏过就别起队列
-        }
-    }
-
-    NSValue *key = [NSValue valueWithNonretainedObject:view];
-    @synchronized (gDYYYMusicQueue) {
-        if ([gDYYYMusicQueue containsObject:key]) return;
-        [gDYYYMusicQueue addObject:key];
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-      @synchronized (gDYYYMusicQueue) {
-          [gDYYYMusicQueue removeObject:key];
-      }
-      @autoreleasepool {
-          if (job == DYYYMusicJobCover) {
-              DYYYMusicApplyCover(view);
-              DYYYMusicApplySameShoot(view);
-          } else {
-              DYYYMusicApplyHidden(view);
-          }
-      }
-    });
-}
-
-// 设置面板改值后，回头刷一遍已经跟踪到的封面按钮。
-static void DYYYMusicStartObserver(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-      dispatch_once(&gDYYYMusicTrackedOnce, ^{
-        gDYYYMusicTracked = [NSHashTable weakObjectsHashTable];
-      });
-      [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
-                                                        object:nil
-                                                         queue:[NSOperationQueue mainQueue]
-                                                    usingBlock:^(__unused NSNotification *note) {
-                                                      NSArray *all = nil;
-                                                      @synchronized (gDYYYMusicTracked) {
-                                                          all = gDYYYMusicTracked.allObjects;
-                                                      }
-                                                      for (UIView *tracked in all) {
-                                                          DYYYMusicEnqueue(tracked, DYYYMusicJobCover);
-                                                      }
-                                                    }];
-    });
-}
-
 %hook AWEMusicCoverButton
-
-- (void)layoutSubviews {
-    %orig;
-    // 回调体内只入队，不做任何视图 / 图层操作。
-    DYYYMusicStartObserver();
-    DYYYMusicEnqueue(self, DYYYMusicJobCover);
-}
 
 - (void)didMoveToWindow {
     %orig;
-    DYYYMusicStartObserver();
-    DYYYMusicEnqueue(self, DYYYMusicJobCover);
+    // 透明度 / 拍同款在这里一次性应用，无观察者、无布局周期参与。
+    DYYYMusicApplyCoverOnce(self);
+    DYYYMusicApplySameShootOnce(self);
 }
 
 %end
 
-// AwemeX 同款：隐藏整块音乐信息元素走抖音原生 shouldHideMusicInfo 路径。
-// 抖音自己会把这个 element（封面、歌名、拍同款 / 玩同款）从布局里摘掉。
+// AwemeX 同款：隐藏整块音乐信息元素（封面、歌名、拍同款 / 玩同款）走抖音原生
+// shouldHideMusicInfo 路径，由抖音自己摘除元素，全程零视图操作。
 @interface AWEPlayInteractionMusicInfoElement : UIView
 @end
 
@@ -6517,13 +6363,6 @@ static void DYYYMusicStartObserver(void) {
         return YES;
     }
     return %orig;
-}
-%end
-
-%hook AWEPlayInteractionListenFeedView
-- (void)layoutSubviews {
-    %orig;
-    DYYYMusicEnqueue(self, DYYYMusicJobHidden);
 }
 %end
 
