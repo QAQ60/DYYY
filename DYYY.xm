@@ -6245,22 +6245,23 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 }
 %end
 
-// ===== 音乐信息区：封面透明度 + 整体隐藏 =====
+// ===== 音乐信息区：封面透明度 + 整体隐藏（按 AwemeX 逆向结果重写） =====
 //
-// 前几版真机卡死（「进去都卡死，连插件设置都打不开」）的根因已经定位：
-// 在 -layoutSubviews 里调用 removeFromSuperview 改变了视图层级，
-// 父视图因此重新布局，抖音的 element 复用机制又把视图加回来，
-// 形成 remove → layout → add → layout 的无限循环，主线程被占满。
+// AwemeX.dylib 逆向确证（本次反汇编逐条核对过）：
+//   * 注册点 0x25baf8：objc_getClass(解密串 "AWEPlayInteractionMusicInfoElement")
+//     → 0x25bb00/0x25bb34 两次 MSHookMessageEx，selector 分别是
+//       shouldHideMusicInfoWithAwemeModel: 与 shouldMusicInfoActiveWithData:context:
+//   * 实现体 0x265184 / 0x265230：switch([MyDefaults aWC7Oz5bmmVkShARKnhka0nATl])
+//     分支 [1] 直接返回 YES（隐藏），分支 [0] 调原实现转发。
+//   * AwemeX 从头到尾没有对音乐图标做 alpha/opacity/mask 任何像素级操作，
+//     它的「隐藏音乐信息」走的是抖音原生 element API，让抖音自己摘除整个元素
+//     （封面 + 歌名 + 拍同款 / 玩同款），干净、零副作用、绝不卡死。
 //
-// 本版三条硬规则：
-//   1. 任何 hook 的方法体内不做任何视图/图层操作，只做一次「入队」；
-//      真正的动作全部 dispatch_async 到主队列，在布局事务之外执行。
-//   2. 隐藏只用 hidden = YES（幂等、不触发 setNeedsLayout），绝不移除视图。
-//   3. 透明度只能用 CALayer.mask —— mask 不参与 hitTest，0 透明度仍可点击；
-//      改用 alpha 或 layer.opacity 会让 hitTest 直接跳过整棵子树，功能失效。
-//
-// 另加一道熔断：1 秒内调度超过 800 次就永久停用本模块。
-// 宁可功能不生效，也不能再让用户卡死。
+// 本版照此移植：
+//   1. 隐藏开关 → hook shouldHideMusicInfoWithAwemeModel: 返回 YES（原生路径）；
+//   2. 透明度 0-1 → CALayer.mask（mask 不参与 hitTest，0 透明度仍可点击），
+//      所有动作 dispatch_async 出布局事务，回调体内只入队；
+//   3. 熔断：1 秒内调度超过 800 次永久停用本模块，宁可失效也不卡死。
 
 static NSString *const kDYYYMusicCoverTransparencyKey = @"DYYYMusicCoverTransparency";
 static char kDYYYMusicMaskLayerKey;
@@ -6299,31 +6300,6 @@ static CGFloat DYYYMusicTransparencyValue(void) {
     return value;
 }
 
-// 找整块音乐信息容器：封面、歌名、「拍同款 / 玩同款」都在这一层里。
-// 先按类名命中（不同抖音版本命名不同），再用尺寸兜底。
-static UIView *DYYYMusicContainerForView(UIView *view) {
-    UIView *fallback = nil;
-    UIView *candidate = view.superview;
-    CGFloat buttonWidth = MAX(view.bounds.size.width, 1.0);
-    CGFloat buttonHeight = MAX(view.bounds.size.height, 1.0);
-
-    for (NSInteger depth = 0; depth < 6 && candidate; depth++) {
-        const char *name = object_getClassName(candidate);
-        if (name && (strstr(name, "MusicInfo") || strstr(name, "MusicCover") || strstr(name, "MusicView"))) {
-            return candidate;
-        }
-        if (!fallback) {
-            CGFloat width = candidate.bounds.size.width;
-            CGFloat height = candidate.bounds.size.height;
-            if (width >= buttonWidth * 1.2 || height >= buttonHeight * 1.2) {
-                fallback = candidate;
-            }
-        }
-        candidate = candidate.superview;
-    }
-    return fallback;
-}
-
 static BOOL DYYYMusicCircuitAllows(void) {
     if (gDYYYMusicCircuitOpen) {
         return NO;
@@ -6341,7 +6317,7 @@ static BOOL DYYYMusicCircuitAllows(void) {
     return YES;
 }
 
-// 隐藏 / 恢复：只碰 hidden，幂等，且只恢复自己隐藏过的视图。
+// 隐藏 / 恢复：只碰 hidden，幂等，只恢复自己隐藏过的视图。
 static void DYYYMusicApplyHidden(UIView *view) {
     if (!view) return;
 
@@ -6359,25 +6335,9 @@ static void DYYYMusicApplyHidden(UIView *view) {
     }
 }
 
-// 封面按钮：先看是否要整体隐藏，否则只对自身挂蒙版。
+// 封面按钮透明度：只挂蒙版，不碰 alpha / hidden / userInteractionEnabled，命中测试正常。
 static void DYYYMusicApplyCover(UIView *view) {
     if (!view || !view.window) return;
-
-    UIView *container = DYYYMusicContainerForView(view);
-
-    if (DYYYGetBool(@"DYYYHideMusicButton")) {
-        if (container) {
-            DYYYMusicApplyHidden(container);
-            if (container.hidden) return;
-        }
-        DYYYMusicApplyHidden(view);
-        return;
-    }
-
-    if (container) {
-        DYYYMusicApplyHidden(container);
-    }
-    DYYYMusicApplyHidden(view);
 
     CGFloat transparency = DYYYMusicTransparencyValue();
     CALayer *layer = view.layer;
@@ -6412,14 +6372,10 @@ typedef NS_ENUM(NSInteger, DYYYMusicJob) {
     DYYYMusicJobHidden = 1,
 };
 
-// 唯一入口：功能没开就直接返回（零开销）；否则去重入队，主队列异步执行。
+// 唯一入口：功能没开直接返回（零开销）；否则去重入队，主队列异步执行。
 static void DYYYMusicEnqueue(UIView *view, DYYYMusicJob job) {
     if (!view) return;
 
-    BOOL hide = DYYYGetBool(@"DYYYHideMusicButton");
-    if (!hide && DYYYMusicTransparencyValue() >= 0.999) {
-        return;
-    }
     if (!DYYYMusicCircuitAllows()) return;
 
     dispatch_once(&gDYYYMusicQueueOnce, ^{
@@ -6430,10 +6386,16 @@ static void DYYYMusicEnqueue(UIView *view, DYYYMusicJob job) {
     });
 
     if (job == DYYYMusicJobCover) {
+        if (DYYYGetBool(@"DYYYHideMusicButton")) return;  // 隐藏走原生 element 路径
+        if (DYYYMusicTransparencyValue() >= 0.999) return;
         @synchronized (gDYYYMusicTracked) {
             if (![gDYYYMusicTracked containsObject:view]) {
                 [gDYYYMusicTracked addObject:view];
             }
+        }
+    } else {
+        if (!DYYYGetBool(@"DYYYHideMusicButton")) {
+            if (!objc_getAssociatedObject(view, &kDYYYMusicHiddenByMeKey)) return;  // 没隐藏过就别起队列
         }
     }
 
@@ -6483,7 +6445,7 @@ static void DYYYMusicStartObserver(void) {
 
 - (void)layoutSubviews {
     %orig;
-    // 这里只入队，什么都不做，绝不会干扰本次布局事务。
+    // 回调体内只入队，不做任何视图 / 图层操作。
     DYYYMusicStartObserver();
     DYYYMusicEnqueue(self, DYYYMusicJobCover);
 }
@@ -6494,6 +6456,20 @@ static void DYYYMusicStartObserver(void) {
     DYYYMusicEnqueue(self, DYYYMusicJobCover);
 }
 
+%end
+
+// AwemeX 同款：隐藏整块音乐信息元素走抖音原生 shouldHideMusicInfo 路径。
+// 抖音自己会把这个 element（封面、歌名、拍同款 / 玩同款）从布局里摘掉。
+@interface AWEPlayInteractionMusicInfoElement : UIView
+@end
+
+%hook AWEPlayInteractionMusicInfoElement
+- (BOOL)shouldHideMusicInfoWithAwemeModel:(id)model {
+    if (DYYYGetBool(@"DYYYHideMusicButton")) {
+        return YES;
+    }
+    return %orig;
+}
 %end
 
 %hook AWEPlayInteractionListenFeedView
