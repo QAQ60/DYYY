@@ -6390,6 +6390,67 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
     }
 }
 
+// ===== 调试:导出视图树 =====
+// 开启「调试:导出视图树」后进目标页面，1.5 秒后把播放页整棵视图树
+// (类名/frame/hidden/无障碍标签/文字)复制到剪贴板，并写一份到沙盒 Documents。
+static void DYYYDebugDumpViewTree(UIView *root) {
+    if (!root) return;
+
+    UIView *top = root;
+    for (NSInteger up = 0; up < 12 && top.superview; up++) {
+        top = top.superview;
+    }
+
+    NSMutableString *out = [NSMutableString stringWithCapacity:4096];
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:@[ top, @0 ]];
+    NSInteger budget = 3000;
+
+    while (stack.count > 0 && budget > 0) {
+        NSArray *pair = stack.lastObject;
+        [stack removeLastObject];
+        UIView *node = pair[0];
+        NSInteger depth = [pair[1] integerValue];
+        budget--;
+
+        UILabel *text = [node isKindOfClass:[UILabel class]] ? (UILabel *)node : nil;
+        [out appendFormat:@"[%ld] %@ frame=%@ hidden=%d acc=%@ text=%@\n",
+             (long)depth, NSStringFromClass(node.class),
+             NSStringFromCGRect(node.frame), node.hidden,
+             node.accessibilityLabel ?: @"-",
+             text.text ?: @"-"];
+
+        for (UIView *child in node.subviews) {
+            [stack addObject:@[ child, @(depth + 1) ]];
+        }
+    }
+
+    [UIPasteboard generalPasteboard].string = out;
+
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/DYYY_viewdump.txt"];
+    [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert =
+            [UIAlertController alertControllerWithTitle:@"DYYY 视图树已导出"
+                                                message:[NSString stringWithFormat:@"%@ 行\n已复制到剪贴板\n文件: Documents/DYYY_viewdump.txt",
+                                                            @(out.length / 40 + 1)]
+                                         preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [[[[UIApplication sharedApplication] keyWindow] rootViewController]
+            presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+static void DYYYDebugScheduleDump(UIView *view) {
+    if (!DYYYGetBool(@"DYYYDebugDumpViews")) return;
+    static NSTimeInterval lastDump = 0;
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+    if (now - lastDump < 5.0) return;
+    lastDump = now;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ DYYYDebugDumpViewTree(view); });
+}
+
 // 拍同款可能晚于封面按钮创建：立即搜一次，0.8s / 2s 后各补搜一次（均为一次性，无循环）。
 static void DYYYMusicScheduleSameShoot(UIView *view) {
     DYYYMusicApplySameShootOnce(view);
@@ -6406,6 +6467,7 @@ static void DYYYMusicScheduleSameShoot(UIView *view) {
     // 透明度 / 拍同款在这里一次性应用，无观察者、无布局周期参与。
     DYYYMusicApplyCoverOnce(self);
     DYYYMusicScheduleSameShoot(self);
+    DYYYDebugScheduleDump(self);
 }
 
 %end
@@ -6441,6 +6503,7 @@ static void DYYYMusicScheduleSameShoot(UIView *view) {
     if (DYYYGetBool(@"DYYYHideMusicButton")) {
         DYYYMusicScheduleSameShoot(self);
     }
+    DYYYDebugScheduleDump(self);
 }
 %end
 

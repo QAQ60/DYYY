@@ -1769,6 +1769,11 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"detail" : @"",
             @"cellType" : @6,
             @"imageName" : @"ic_eyeslash_outlined_16"},
+          @{@"identifier" : @"DYYYDebugDumpViews",
+            @"title" : @"调试:导出视图树",
+            @"detail" : @"进目标页面1.5秒后整树复制到剪贴板",
+            @"cellType" : @6,
+            @"imageName" : @"ic_eyeslash_outlined_16"},
           @{
               @"identifier" : @"DYYYHideGradient",
               @"title" : @"隐藏遮罩效果",
