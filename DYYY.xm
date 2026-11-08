@@ -6312,6 +6312,19 @@ static void DYYYMusicApplyCoverOnce(UIView *view) {
     layer.mask = mask;
 }
 
+// AwemeX 照抄：addElement:withParams: 的元素黑名单（jump table 分支[1] 直接吞挂载）。
+static BOOL DYYYMusicIsSameShootElement(id element) {
+    if (!element) return NO;
+    const char *name = object_getClassName(element);
+    if (name && (strstr(name, "SameShoot") || strstr(name, "SameFrame") ||
+                 strstr(name, "SameUgc") || strstr(name, "Template") ||
+                 strstr(name, "Pictograph") || strstr(name, "AnchorView") ||
+                 strstr(name, "ShootChallenge"))) {
+        return YES;
+    }
+    return NO;
+}
+
 // 拍同款（AwemeX 逆向 a18b20 → TemplateAnchorView）：封面按钮挂窗时一次性浅搜，
 // 整只 hidden，不碰层级。每个按钮生命周期只执行一次。
 static void DYYYMusicApplySameShootOnce(UIView *view) {
@@ -6331,7 +6344,10 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
         budget--;
 
         const char *name = object_getClassName(node);
-        if (name && (strstr(name, "Template") || strstr(name, "AnchorView"))) {
+        NSString *label = node.accessibilityLabel;
+        if ((name && (strstr(name, "Template") || strstr(name, "AnchorView") ||
+                      strstr(name, "SameShoot") || strstr(name, "SameUgc"))) ||
+            (label && ([label containsString:@"拍同款"] || [label containsString:@"玩同款"]))) {
             node.hidden = YES;
             continue;
         }
@@ -6363,6 +6379,26 @@ static void DYYYMusicApplySameShootOnce(UIView *view) {
         return YES;
     }
     return %orig;
+}
+%end
+
+// AwemeX 照抄（a18180 = AWEPlayInteractionNewBottomElementContainer）：
+// addElement:withParams: 命中拍同款特征时吞掉挂载（不调原实现），元素永不出现。
+@interface AWEPlayInteractionNewBottomElementContainer : UIView
+@end
+
+%hook AWEPlayInteractionNewBottomElementContainer
+- (void)addElement:(id)element withParams:(id)params {
+    if (DYYYGetBool(@"DYYYHideMusicButton") && DYYYMusicIsSameShootElement(element)) {
+        return;
+    }
+    %orig;
+}
+- (void)didMoveToWindow {
+    %orig;
+    if (DYYYGetBool(@"DYYYHideMusicButton")) {
+        DYYYMusicApplySameShootOnce(self);
+    }
 }
 %end
 
