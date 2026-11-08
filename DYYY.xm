@@ -6381,8 +6381,9 @@ static void DYYYTrackMusicElement(UIView *view) {
 
 - (void)initializeElement:(id)element withParamDic:(id)params {
     %orig;
-    if ([self isKindOfClass:[UIView class]]) {
-        DYYYTrackMusicElement((UIView *)self);
+    UIView *elementView = (UIView *)self;
+    if ([elementView isKindOfClass:[UIView class]]) {
+        DYYYTrackMusicElement(elementView);
     }
 }
 
