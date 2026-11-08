@@ -6291,18 +6291,17 @@ static CGFloat DYYYMusicTransparencyValue(void) {
 // （碟片旁的歌名文字是兄弟视图，只蒙按钮罩不住文字，要蒙到容器层）。
 // 高度限制在半屏以内，避免误伤整页容器。
 static UIView *DYYYMusicCoverContainer(UIView *view) {
-    UIView *target = view;
-    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-    for (NSInteger up = 0; up < 5; up++) {
-        UIView *parent = target.superview;
-        if (!parent) break;
-        target = parent;
-        if (parent.bounds.size.width > view.bounds.size.width * 1.5 &&
-            parent.bounds.size.height < screenH * 0.5) {
-            break;
+    // 音乐信息行是一个矮条：宽度明显大于碟片、高度不超过 120pt。
+    // 视频画面 / 页面级容器又高又大，一律不选（否则蒙版会把视频蒙成黑屏）。
+    UIView *parent = view.superview;
+    for (NSInteger up = 0; parent && up < 5; up++, parent = parent.superview) {
+        CGFloat w = parent.bounds.size.width;
+        CGFloat h = parent.bounds.size.height;
+        if (w > view.bounds.size.width * 1.5 && h > 0.0 && h <= 120.0) {
+            return parent;
         }
     }
-    return target;
+    return view;
 }
 
 // 封面透明度：只在 didMoveToWindow 应用一次，蒙到音乐信息容器层（图标+文字一起透明），
